@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build workspace
+        run: cargo build --workspace --locked
+      - name: Test workspace
+        env:
+          SESSCRUB_NO_KEYRING: "1"
+        run: cargo test --workspace --locked
+      - name: Build without default features (no ONNX/NER)
+        run: cargo build --locked --no-default-features
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy (workspace)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (no default features)
+        run: cargo clippy --locked --no-default-features -- -D warnings
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit dependencies
+        run: cargo audit
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks v8.30.1
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C . gitleaks
+      - name: Scan git history for secrets
+        run: ./gitleaks git --config .gitleaks.toml --redact --verbose .

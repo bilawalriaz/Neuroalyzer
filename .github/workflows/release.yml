@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          archive="sesscrub-${GITHUB_REF_NAME}-${TARGET}.tar.gz"
+          stage="$(mktemp -d)"
+          cp "target/${TARGET}/release/sesscrub" README.md LICENSE "$stage/"
+          tar -C "$stage" -czf "$archive" sesscrub README.md LICENSE
+          shasum -a 256 "$archive" > "$archive.sha256"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "sesscrub-$env:GITHUB_REF_NAME-$env:TARGET.zip"
+          $stage = Join-Path $env:RUNNER_TEMP "stage-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Path "target\$env:TARGET\release\sesscrub.exe", "README.md", "LICENSE" -Destination $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
+          [System.IO.File]::WriteAllText("$archive.sha256", "$hash  $archive`n")
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: sesscrub-${{ github.ref_name }}-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+      - name: Combine checksums
+        working-directory: dist
+        run: cat *.sha256 > SHA256SUMS.txt
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS.txt

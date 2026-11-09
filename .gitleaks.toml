@@ -1,0 +1,15 @@
+title = "sesscrub gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures, detector sources, docs and the rule file itself contain secret-shaped examples by design"
+paths = [
+    '''^rules/gitleaks\.toml$''',
+    '''^crates/fixturegen/''',
+    '''^tests/''',
+    '''^src/detect/''',
+    '''^docs/''',
+    '''^benches/''',
+]
