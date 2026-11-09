@@ -30,7 +30,8 @@ pub fn open_readonly(path: &std::path::Path) -> rusqlite::Result<Connection> {
 
 fn file_uri(p: &std::path::Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
-    let mut out = String::from("file:");
+    // file:///abs/path on Unix, file:///C:/path on Windows.
+    let mut out = String::from("file://");
     if !s.starts_with('/') {
         out.push('/');
     }

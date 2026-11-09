@@ -229,7 +229,11 @@ mod tests {
 
         let mut files = Vec::new();
         collect_files(&root, &mut files);
-        let has = |needle: &str| files.iter().any(|p| p.to_string_lossy().contains(needle));
+        let has = |needle: &str| {
+            files
+                .iter()
+                .any(|p| p.to_string_lossy().replace('\\', "/").contains(needle))
+        };
         assert!(has("Library/Application Support/Code/User/workspaceStorage"));
         assert!(has("Code - Insiders"));
         assert!(has(".config/Code/User"));

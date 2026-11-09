@@ -139,7 +139,7 @@ pub fn create(
     let mut entries = vec![];
     for (i, s) in sources.iter().enumerate() {
         let (size, mtime, mode) = file_meta(&s.path)?;
-        let before = crate::fsutil::hash_file(&s.path)?.context("file vanished before backup")?;
+        let before = crate::fsutil::hash_file(&s.path)?.context("a file disappeared before it could be backed up")?;
         entries.push(Entry {
             id: format!("files/{i:06}"),
             group: s.group,

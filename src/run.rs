@@ -418,7 +418,11 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
         opts.only.clone()
     };
     let d = discovery::discover(&env, &only, &also);
-    let mut tools: Vec<&str> = discovery::TOOLS.iter().map(|t| t.0).collect();
+    let mut tools: Vec<&str> = discovery::TOOLS
+        .iter()
+        .map(|t| t.0)
+        .filter(|t| only.is_empty() || only.iter().any(|o| o.eq_ignore_ascii_case(t)))
+        .collect();
     if d.jobs.iter().any(|j| j.tool == "custom") {
         tools.push("custom");
     }
@@ -452,8 +456,19 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
         if roots.is_empty() {
             println!("  not found");
         }
+        // Attribute each file to the most specific root that contains it.
+        let best = |j: &Job| {
+            roots
+                .iter()
+                .filter(|r| j.path.starts_with(r))
+                .max_by_key(|r| r.as_os_str().len())
+                .copied()
+        };
         for r in &roots {
-            let rj: Vec<&&Job> = jobs.iter().filter(|j| j.path.starts_with(r)).collect();
+            let rj: Vec<&&Job> = jobs.iter().filter(|j| best(j) == Some(*r)).collect();
+            if rj.is_empty() && roots.iter().any(|o| o != r && (o.starts_with(r) || r.starts_with(o))) {
+                continue;
+            }
             println!(
                 "  {}  {} files, {}",
                 r.display(),

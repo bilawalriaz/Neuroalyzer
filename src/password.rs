@@ -28,6 +28,7 @@ pub struct PwArgs {
 pub enum Purpose {
     Clean,
     Restore,
+    SaveToKeychain,
 }
 
 fn strip_newline(mut s: String) -> String {
@@ -99,7 +100,8 @@ pub fn resolve(args: &PwArgs, purpose: Purpose, quiet: bool) -> Result<SecretStr
         }
         return finish(Zeroizing::new(v), quiet);
     }
-    if std::env::var_os("SESSCRUB_NO_KEYRING").is_none()
+    if purpose != Purpose::SaveToKeychain
+        && std::env::var_os("SESSCRUB_NO_KEYRING").is_none()
         && let Some(e) = keyring_entry()
         && let Ok(pw) = e.get_password()
     {
@@ -111,7 +113,7 @@ pub fn resolve(args: &PwArgs, purpose: Purpose, quiet: bool) -> Result<SecretStr
         );
     }
     let first = Zeroizing::new(rpassword::prompt_password("Backup password: ").context("couldn't read the password")?);
-    if purpose == Purpose::Clean {
+    if purpose != Purpose::Restore {
         let second = Zeroizing::new(rpassword::prompt_password("Repeat it: ").context("couldn't read the password")?);
         if *first != *second {
             bail!("the passwords don't match");
@@ -121,15 +123,7 @@ pub fn resolve(args: &PwArgs, purpose: Purpose, quiet: bool) -> Result<SecretStr
 }
 
 pub fn key_save(args: &PwArgs) -> Result<()> {
-    let pw = resolve(
-        &PwArgs {
-            password_file: args.password_file.clone(),
-            password_stdin: args.password_stdin,
-            insecure_password_file: args.insecure_password_file,
-        },
-        Purpose::Clean,
-        false,
-    )?;
+    let pw = resolve(args, Purpose::SaveToKeychain, false)?;
     let e = keyring_entry().context("the OS keychain isn't available")?;
     use age::secrecy::ExposeSecret;
     e.set_password(pw.expose_secret())
