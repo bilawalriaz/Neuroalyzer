@@ -8,7 +8,7 @@ Working notes so the build can resume if interrupted.
 | 2. Fixture generator, `scan`, secrets, structured PII, known values, report | done |
 | 3. Passwords, encrypted backup, `clean`, `restore`, round-trip tests | done |
 | 4. Tabular heuristic, generic-format fallback | done |
-| 5. GLiNER NER, feature flag, dedupe, batching, `model fetch`, benchmarks | done (bench numbers pending) |
+| 5. GLiNER NER, feature flag, dedupe, batching, `model fetch` | done (synthetic benchmark dropped at the owner's request) |
 | 6. Config, allowlist, keychain, prose pass, README, v0.1.0 | in progress: docs written, awaiting green CI and tag |
 
 ## Decisions

@@ -195,11 +195,9 @@ SESSCRUB_MODEL_DIR=/some/dir sesscrub model fetch
 SESSCRUB_TEST_MODEL_DIR=/some/dir cargo test --release --test ner
 ```
 
-## Benchmarks
+## Speed
 
-`scripts/bench.sh [BYTES]` generates a synthetic tree (1 GB by default), then times a scan with NER, a scan without NER, and a clean without NER. The NER run needs the model, so fetch it first.
-
-BENCHMARK_RESULTS_PLACEHOLDER
+Without NER, scanning is limited mostly by disk reads. NER runs a transformer model on every unique chunk of prose, so it is far slower, and its speed depends on how much distinct prose your sessions hold. To see the real numbers for your data, time `sesscrub scan --root` on a copy (see "Testing on a copy"). The report prints elapsed time and MB/s.
 
 ## Licence
 
