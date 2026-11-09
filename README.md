@@ -36,7 +36,7 @@ cargo build --release
 
 The binary is at `target/release/sesscrub`, or `sesscrub.exe` on Windows.
 
-The default build includes the `ner` feature, which pulls in ONNX Runtime. The `ort` crate downloads a prebuilt ONNX Runtime library during the build. If that download is blocked by a locked-down network or proxy, build without the feature:
+The default build includes the `ner` feature, which pulls in ONNX Runtime. The `ort` crate downloads a prebuilt ONNX Runtime library (from pyke's CDN, `parcel.pyke.io`) during the build. If that download is blocked by a locked-down network or proxy, build without the feature:
 
 ```sh
 cargo build --release --no-default-features
