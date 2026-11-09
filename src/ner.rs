@@ -35,7 +35,10 @@ const FILES: &[(&str, &str, &str, u64)] = &[
 #[cfg_attr(not(feature = "ner"), allow(dead_code))]
 const CHUNK_WORDS: usize = 160;
 #[cfg_attr(not(feature = "ner"), allow(dead_code))]
-const BATCH: usize = 8;
+/// One chunk per inference call. A batch pads every sequence to the longest
+/// one in it and scores the padded spans, which measured ~1.7x more work than
+/// the calls it saves on real sessions.
+const BATCH: usize = 1;
 
 pub fn model_dir() -> std::path::PathBuf {
     crate::paths::models_dir().join(MODEL_ID.replace('/', "--"))
@@ -167,6 +170,23 @@ mod imp {
         Ok(())
     }
 
+    /// ONNX Runtime's intra-op pool uses every logical CPU. On Apple silicon
+    /// that includes the efficiency cores, and the pool waits on them: on an
+    /// M3 Pro, 12 threads measured 1.7x slower than the 6 performance cores.
+    /// Elsewhere, use what the OS reports.
+    fn model_threads() -> usize {
+        #[cfg(target_os = "macos")]
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .args(["-n", "hw.perflevel0.physicalcpu"])
+            .output()
+            && let Ok(n) = String::from_utf8_lossy(&out.stdout).trim().parse::<usize>()
+            && n > 0
+        {
+            return n;
+        }
+        std::thread::available_parallelism().map_or(4, |n| n.get())
+    }
+
     impl Ner {
         pub fn load(cfg: &NerConfig, quiet: bool) -> Result<Self> {
             if !present() {
@@ -185,8 +205,7 @@ mod imp {
             let params = Parameters::default()
                 .with_threshold(cfg.threshold)
                 .with_max_length(Some(512));
-            let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-            let rt = RuntimeParameters::default().with_threads(threads);
+            let rt = RuntimeParameters::default().with_threads(model_threads());
             let model = GLiNER::<SpanMode>::new(params, rt, d.join("tokenizer.json"), d.join("model.onnx"))
                 .map_err(|e| anyhow::anyhow!("couldn't load the NER model: {e}"))?;
             Ok(Self {
