@@ -20,6 +20,8 @@ Working notes so the build can resume if interrupted.
 - gitleaks rules: the common terminator `(?:[\x60'"\s;]|\\[nr]|$)` is widened to also accept `.,)]}>`, since in prose a token often ends a sentence.
 - VS Code `state.vscdb`: only ItemTable rows whose key mentions chat/copilot/interactive are touched.
 
+- State-machine audit (2026-11-09): see docs/STATE_MACHINES.md. Fixed issues #6-#10: archive ordering and naming, run lock, check-then-act redaction, restore of locked or untouched files, crash-recovery journal, HMAC key no-clobber, verified model install.
+
 ## Test status
 
-`cargo test --workspace`: unit tests plus tests/e2e.rs (scan, clean, raw-byte leak search, validity, byte-identical restore, wrong password, password sources, insecure password file, active and locked files, format drift).
+`cargo test --workspace`: unit tests plus tests/e2e.rs (scan, clean, raw-byte leak search, validity, byte-identical restore, wrong password, password sources, insecure password file, active and locked files, format drift, interrupted clean, VACUUM failure after commit, concurrent runs, restore of locked files). Fault injection: `SESSCRUB_TEST_FAULT` (debug builds only).

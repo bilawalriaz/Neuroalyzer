@@ -138,11 +138,13 @@ It holds `archives/` (backups), `reports/`, `models/` (the NER model) and `hmac.
 ## Safety model
 
 - Every file that will change is copied into an encrypted backup first. The backup is decrypted and every hash is checked before any session file is touched.
-- Each file is checked again just before it is written. If it changed since the backup, it is left alone.
-- Restore does not overwrite a file that changed since cleaning unless you confirm it or pass `--force`.
+- Each file is checked again just before it is written. If it changed since the backup, or another process has locked it, it is left alone.
+- An interrupted `clean` can still be restored. Each file's after-redaction hash is journalled before the file is replaced.
+- Restore does not overwrite a file that changed since cleaning unless you confirm it or pass `--force`. It never overwrites a file another process has locked.
+- Only one `clean` or `restore` runs at a time.
 - Reports contain counts, types and file paths. They never contain the values.
 
-The details are in [docs/SAFETY.md](docs/SAFETY.md).
+The details are in [docs/SAFETY.md](docs/SAFETY.md). The states, invariants and transitions behind them are in [docs/STATE_MACHINES.md](docs/STATE_MACHINES.md).
 
 ## Testing on a copy
 

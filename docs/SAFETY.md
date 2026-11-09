@@ -4,16 +4,18 @@ This page describes what `clean` and `restore` do, in order, and what each step 
 
 ## What clean does
 
-`clean` runs these steps in order. If a step fails, the run stops before the next one.
+`clean` runs these steps in order. If a step fails, the run stops before the next one. The states and invariants behind them are in [STATE_MACHINES.md](STATE_MACHINES.md).
 
+0. Take the run lock (`sesscrub.lock` in the data directory). If another `clean` or `restore` holds it, stop with a message. The lock is released when the process exits, even on a crash.
 1. Scan the files and work out which would change. Active files and files that cannot be written are skipped here.
 2. If nothing would change, stop. No backup is written.
 3. Ask for confirmation. Skip this with `--yes`. Without a terminal and without `--yes`, sesscrub stops and asks you to re-run with `--yes`.
 4. Get the backup password. See [Passwords](#passwords).
 5. Write the encrypted archive with only the files that will change, including SQLite `-wal` and `-journal` files. Re-open the archive, decrypt it and check every hash. If any check fails, the partial archive is deleted and no session file is changed.
-6. Redact each file. Before writing, sesscrub checks that the file still matches its backup hash. If it has changed, the file is left alone and the report says so.
-7. Write the after-redaction hashes to a sidecar file.
-8. Delete backups beyond the number to keep (`--keep`, default 5).
+6. Redact each file. Just before each file is written, sesscrub checks it is not locked by another process, then reads it once and checks that those bytes match the backup hash. It redacts those same bytes, and checks the file on disk again immediately before replacing it. If the file changed at any point, it is left alone and the report says so. For SQLite the check runs inside the write transaction, so no other process can commit between the check and the redaction.
+7. As each file is written, its after-redaction hash is appended to a recovery journal and flushed to disk before the file is replaced.
+8. Write the after-redaction hashes to the encrypted sidecar, then delete the journal. If the run stops before this step (Ctrl-C, crash, power loss), the journal stays and `restore` uses it.
+9. Delete backups beyond the number to keep (`--keep`, default 5), and any leftover partial files from interrupted runs.
 
 ## Backup format
 
@@ -22,7 +24,10 @@ Each backup is one archive plus one sidecar.
 | File | Contents |
 |---|---|
 | `archives/sesscrub-<timestamp>.tar.zst.age` | The backup itself. Written once, then verified. |
-| `archives/sesscrub-<timestamp>.after.age` | Hashes of each file after redaction. Written after the redaction pass. |
+| `archives/sesscrub-<timestamp>.after.age` | Hashes of each file that clean wrote, after redaction. Written after the redaction pass. |
+| `archives/sesscrub-<timestamp>.after.journal` | Only while `clean` runs, or after it was interrupted. The same hashes, written one by one as files are replaced. It holds entry ids and hashes of redacted content, never values, and is owner-only. |
+
+Two backups made in the same second get a suffix: `sesscrub-<timestamp>-1`, `-2`, and so on. The suffix counts as newer, so the newest backup is always kept.
 
 The archive is built in three layers. The files are packed with tar, compressed with zstd at level 3 (multithreaded), and then encrypted with age, using a passphrase protected by scrypt. Everything is streamed, so no plaintext copy is written to disk.
 
@@ -30,7 +35,7 @@ The first entry in the tar is `manifest.json`. It lists each file with its origi
 
 The after-redaction hashes cannot go in the archive, because the archive is written before redaction starts. They go in the sidecar, which is encrypted with the same password. The archive itself does not change after it is verified.
 
-The data directory holds the archives in `archives/`. The folder is owner-only (`0700` on Unix), and so are the files (`0600`). `sesscrub list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar too.
+The data directory holds the archives in `archives/`. The folder is owner-only (`0700` on Unix), and so are the files (`0600`). `sesscrub list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar and journal too. Archive files with names sesscrub didn't make are listed but never deleted.
 
 ## Passwords
 
@@ -56,10 +61,12 @@ The archive cannot be opened without its password, and sesscrub has no recovery 
 
 Each rewritten file goes through the same steps:
 
-1. Write the new contents to a temporary file in the same folder.
-2. Flush the file to disk (`fsync`).
-3. Rename the temporary file over the original. The rename is atomic.
-4. Copy the original permissions onto the new file.
+1. Read the file once and check those bytes against the backup hash.
+2. Write the new contents to a temporary file in the same folder, with the original permissions.
+3. Flush the file to disk (`fsync`).
+4. Check the original against the backup hash again. If it changed, delete the temporary file and leave the original alone.
+5. Record the new hash in the journal.
+6. Rename the temporary file over the original. The rename is atomic.
 
 Files with nothing to redact are not written at all.
 
@@ -84,20 +91,26 @@ The update path is:
 
 1. Open the database with a busy timeout of 2 seconds. If it is still locked, the file is skipped as active.
 2. Turn on `secure_delete`, so that deleted content is overwritten with zeros.
-3. Apply every change in one transaction.
-4. Run `VACUUM`. Applications leave old text in free pages when they edit data, and `VACUUM` rebuilds the file without those pages.
-5. Run `wal_checkpoint(TRUNCATE)`, so the write-ahead log no longer holds the old text.
+3. Start a write transaction (`BEGIN IMMEDIATE`). From here on, no other process can commit.
+4. Check the database and its `-wal` or `-journal` against the backup hashes. A `-wal` or `-journal` that wasn't backed up must be empty. If anything changed, roll back and skip the file.
+5. Read the rows, and apply every change in the same transaction.
+6. Run `VACUUM`. Applications leave old text in free pages when they edit data, and `VACUUM` rebuilds the file without those pages.
+7. Run `wal_checkpoint(TRUNCATE)`, so the write-ahead log no longer holds the old text.
+
+If step 6 or 7 fails, the redaction is already committed. The file is reported as modified, with a note that old text may remain in free pages.
 
 ## What restore does
 
-`restore` with no name lists the backups, newest first, and in a terminal asks which one to restore. With a name, it accepts the full name, a unique prefix, or a path to an archive file.
+`restore` with no name lists the backups, newest first, and in a terminal asks which one to restore. With a name, it accepts the full name, a unique prefix, or a path to an archive file. A prefix that matches more than one backup is refused, and the matches are listed. Restore takes the same run lock as `clean`.
 
 The steps are:
 
-1. Read the password, decrypt the archive and read the manifest. A wrong password stops the restore here, before any file is written.
+1. Read the password, decrypt the archive and read the manifest. A wrong password stops the restore here, before any file is written. The after-hashes come from the sidecar or, if the clean was interrupted, from its journal. Restore says when it used the journal.
 2. Decide what to do with each group of files (a database and its companions counts as one group):
    - If every file already matches its "before" hash, nothing is restored.
+   - If a file in the group is locked or open in another process, the group is skipped, even with `--force`. Close the app and run restore again.
    - If every file still matches its "after" hash, it has not changed since `clean`, so the group is restored without asking.
+   - If `clean` never wrote the group (it was skipped because it changed after the backup), the group is skipped. `--force` overwrites it.
    - Otherwise a file in the group changed after cleaning. In a terminal, sesscrub asks once for the group. Without a terminal the group is skipped, and with `--force` it is overwritten.
 3. Write each restored file atomically, using the same method as `clean`. The file gets its original Unix mode and modification time.
 4. For a SQLite database, remove a stale `-shm` file. If the backup has no `-wal` or `-journal` for the database, remove the current one, because it would not match the restored file.
