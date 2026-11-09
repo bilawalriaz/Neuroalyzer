@@ -33,7 +33,11 @@ pub fn reports_dir() -> PathBuf {
     data_dir().join("reports")
 }
 
+/// `SESSCRUB_MODEL_DIR` overrides where the NER model lives (shared caches, tests).
 pub fn models_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("SESSCRUB_MODEL_DIR") {
+        return PathBuf::from(p);
+    }
     data_dir().join("models")
 }
 

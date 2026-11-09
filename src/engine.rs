@@ -194,7 +194,8 @@ impl Engine {
                     }
                 });
             }
-            Format::Text => texts.push(String::from_utf8_lossy(raw).into_owned()),
+            // Text is redacted line by line, so prepare the same units.
+            Format::Text => texts.extend(String::from_utf8_lossy(raw).split_inclusive('\n').map(str::to_owned)),
             Format::Sqlite => {}
         }
         ner.prepare(texts.iter().map(String::as_str));
