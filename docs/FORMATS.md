@@ -61,8 +61,8 @@ Permalinks below use `blob/<sha>/<path>#L<n>`.
 - **Home directory:** `~/.copilot` by default.
   - Changelog: "New sessions are stored in `~/.copilot/session-state`. Legacy sessions are stored in `~/.copilot/history-session-state`" (https://github.com/github/copilot-cli/blob/2e935d3612dcfac71c3a76842794e8c7d93c5fd3/changelog.md#L4707-L4708).
   - Legacy `$XDG_CONFIG_HOME/.copilot` is migrated into `~/.copilot` (`changelog.md#L158`).
-  - `COPILOT_HOME` is documented as "where the CLI stores its configuration and state" (`container/README.md#L60`, https://github.com/github/copilot-cli/blob/2e935d3612dcfac71c3a76842794e8c7d93c5fd3/container/README.md#L60). Also honored for `--config-dir` and discovery registry (`changelog.md#L2815`, `#L3145`).
-- **Conflict:** copilot-chat resolves session-state as `$XDG_STATE_HOME/.copilot/session-state` if set, else `~/.copilot/session-state` (https://github.com/microsoft/vscode-copilot-chat/blob/5863f5a7088958050792b5dccbe8b46c6e13eccc/src/extension/chatSessions/copilotcli/node/cliHelpers.ts#L13-L26). VS Code core resolves it under `<COPILOT_HOME>/session-state/<rawId>/events.jsonl` (`src/vs/workbench/contrib/chat/browser/copilotCliEventsUri.ts#L26-L33`, copilot home from `src/vs/platform/environment/common/copilotHome.ts#L20-L21`: `COPILOT_HOME || ~/.copilot`). Behavior with both variables set is UNVERIFIED.
+  - `COPILOT_HOME` is documented as "where the CLI stores its configuration and state" (`container/README.md#L60`, https://github.com/github/copilot-cli/blob/2e935d3612dcfac71c3a76842794e8c7d93c5fd3/container/README.md#L60). Also honoured for `--config-dir` and discovery registry (`changelog.md#L2815`, `#L3145`).
+- **Conflict:** copilot-chat resolves session-state as `$XDG_STATE_HOME/.copilot/session-state` if set, else `~/.copilot/session-state` (https://github.com/microsoft/vscode-copilot-chat/blob/5863f5a7088958050792b5dccbe8b46c6e13eccc/src/extension/chatSessions/copilotcli/node/cliHelpers.ts#L13-L26). VS Code core resolves it under `<COPILOT_HOME>/session-state/<rawId>/events.jsonl` (`src/vs/workbench/contrib/chat/browser/copilotCliEventsUri.ts#L26-L33`, copilot home from `src/vs/platform/environment/common/copilotHome.ts#L20-L21`: `COPILOT_HOME || ~/.copilot`). Behaviour with both variables set is UNVERIFIED.
 - **Layout per session:** `~/.copilot/session-state/<sessionId>/`
   - `events.jsonl`: event log (see below).
   - `workspace.yaml`: copilot-chat copies it on fork and rewrites the session id (`copilotcliSessionService.ts#L1313-L1318`). Its field names are UNVERIFIED.
@@ -99,7 +99,9 @@ Permalinks below use `blob/<sha>/<path>#L<n>`.
 - **Insiders nameShort: still UNVERIFIED.** The OSS repo's `src/vs/platform/product/common/product.ts#L40-L60` only derives a `" Dev"` variant for local dev builds. Insiders' `nameShort` ("Code - Insiders") is not defined in the OSS repo, so it could not be confirmed from source in this pass.
 
 
-Pinned sources (read from shallow clones of current default branches):
+## Sources for OpenCode and omp
+
+Shallow clones of the current default branches, pinned as follows:
 - OpenCode: `anomalyco/opencode` @ `be6b87e` (branch `dev`). Base: https://github.com/anomalyco/opencode/blob/be6b87ef489c12bda9687c41977fc321b5407fc8/
 - OpenCode Go (archived): `opencode-ai/opencode` @ `73ee493`. Base: https://github.com/opencode-ai/opencode/blob/73ee493265acf15fcd8caab2bc8cd3bd375b63cb/
 - omp: `can1357/oh-my-pi` @ `38be738` (branch `main`). Base: https://github.com/can1357/oh-my-pi/blob/38be7382c55c44e51c88f0c9833bbd5214c6456e/
@@ -166,7 +168,9 @@ Abbreviations below: OC, GO, OMP, OLD = the bases above.
   - `finish` `{reason, time}` [#L104-L107]
 - User prose: `text` part of a `role="user"` message. Tool output: `tool_result.content`.
 
-## omp (oh-my-pi) (TypeScript on Bun; package `@oh-my-pi/coding-agent`)
+## omp (oh-my-pi)
+
+TypeScript on Bun, package `@oh-my-pi/coding-agent`.
 
 - Relation to badlogic/pi-mono: UNVERIFIED (not checked).
 

@@ -513,21 +513,43 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
 pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bool) -> Result<i32> {
     let dir = crate::paths::archives_dir();
     let list = backup::list(&dir);
-    let Some(name) = archive else {
-        if list.is_empty() {
-            eprintln!("No backups found in {}.", dir.display());
-        } else {
-            eprintln!("Backups (newest first). Restore one with: sesscrub restore <NAME>\n");
-            for a in &list {
+    let name = match archive {
+        Some(n) => n,
+        None => {
+            if list.is_empty() {
+                eprintln!("No backups found in {}.", dir.display());
+                return Ok(0);
+            }
+            eprintln!("Backups, newest first:\n");
+            for (i, a) in list.iter().enumerate() {
                 eprintln!(
-                    "  {}  {}  {}",
+                    "  {:>2}) {}  {}  {}",
+                    i + 1,
                     a.name,
                     a.modified.format("%Y-%m-%d %H:%M:%S"),
                     report::human(a.size)
                 );
             }
+            if !std::io::stdin().is_terminal() {
+                eprintln!("\nRestore one with: sesscrub restore <NAME>");
+                return Ok(0);
+            }
+            eprint!(
+                "\nWhich one do you want to restore? [1-{}, Enter to cancel] ",
+                list.len()
+            );
+            let mut s = String::new();
+            std::io::stdin().read_line(&mut s)?;
+            let s = s.trim();
+            if s.is_empty() {
+                eprintln!("Nothing restored.");
+                return Ok(0);
+            }
+            match s.parse::<usize>() {
+                Ok(n) if (1..=list.len()).contains(&n) => list[n - 1].path.display().to_string(),
+                _ => bail!("'{s}' isn't one of the listed numbers"),
+            }
         }
-        return Ok(0);
     };
     let path = {
         let p = PathBuf::from(&name);
