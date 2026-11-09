@@ -233,9 +233,10 @@ pub fn install_verified(
     if got != sha256_hex {
         anyhow::bail!("{name} failed its SHA-256 check (expected {sha256_hex}, got {got}). Nothing was kept.");
     }
-    tmp.persist(dir.join(name))
-        .map_err(|e| e.error)
-        .with_context(|| format!("couldn't move {name} into place"))?;
+    // Retry like every other replace here: on Windows a rename over a file
+    // that another download (or a scanner) is replacing at the same moment
+    // fails with "Access is denied" for a short while.
+    persist(tmp, &dir.join(name)).with_context(|| format!("couldn't move {name} into place"))?;
     sync_dir(dir);
     Ok(())
 }
