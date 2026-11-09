@@ -753,6 +753,8 @@ mod tests {
         let (job, e, j) = setup(d.path());
         let mut f = std::fs::OpenOptions::new().append(true).open(&job.path).unwrap();
         std::io::Write::write_all(&mut f, b"{\"text\":\"new turn\"}\n").unwrap();
+        // Close our handle: on Windows an open handle is itself "active".
+        drop(f);
         let before = std::fs::read(&job.path).unwrap();
         let r = redact_group(&engine(), &job, &[&e], &j);
         assert_eq!(r.err().as_deref(), Some("changed after backup; left as is"));
