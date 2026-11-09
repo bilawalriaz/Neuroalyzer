@@ -5,6 +5,7 @@ pub mod config;
 pub mod detect;
 pub mod discovery;
 pub mod engine;
+pub mod fault;
 pub mod fsutil;
 pub mod jsonscan;
 pub mod known;

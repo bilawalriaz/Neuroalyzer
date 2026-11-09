@@ -10,7 +10,7 @@ use crate::password::{self, Purpose, PwArgs};
 use crate::report::{self, Engines, FileReport, Report};
 use crate::sqlite::{self, SqlResult};
 use crate::token::Tokenizer;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -145,6 +145,7 @@ fn analyse(engine: &Engine, job: &Job, min_age: Option<Duration>) -> std::result
         Format::Sqlite => match sqlite::process(engine, job, false) {
             Ok(SqlResult::Done(o)) => Ok(o),
             Ok(SqlResult::Busy) => Err("active: database is locked".into()),
+            Ok(SqlResult::Changed(r)) => Err(r),
             Err(e) => Err(format!("error: {e:#}")),
         },
         _ => match fsutil::read(&job.path) {
@@ -221,6 +222,8 @@ fn confirm(question: &str) -> Result<bool> {
 }
 
 pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &PwArgs) -> Result<i32> {
+    let _lock = crate::paths::lock_data_dir()?;
+    let mut exit = 0;
     let started = chrono::Local::now();
     let t0 = Instant::now();
     let p = prepare(opts, cfg, true)?;
@@ -304,6 +307,10 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
         if !opts.quiet {
             eprintln!("Backup written and verified: {}", apath.display());
         }
+        // From here until the sidecar is written, after-hashes go to the
+        // journal before each file is replaced, so an interrupted run can
+        // still be restored without --force.
+        let journal = backup::Journal::create(&apath)?;
         // Redact.
         let after = Mutex::new(BTreeMap::<String, Option<String>>::new());
         let pb = bar(
@@ -317,67 +324,42 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
             .map(|(g, &i)| {
                 let job = &p.jobs[i];
                 let group: Vec<&backup::Entry> = manifest.entries.iter().filter(|e| e.group == g).collect();
-                let r = (|| -> std::result::Result<Outcome, String> {
-                    for e in &group {
-                        let now =
-                            fsutil::hash_file(std::path::Path::new(&e.path)).map_err(|e| format!("error: {e:#}"))?;
-                        if now.as_deref() != Some(e.before.as_str()) {
-                            return Err("changed after backup; left as is".into());
-                        }
-                    }
-                    let o = match job.format {
-                        Format::Sqlite => match sqlite::process(&p.engine, job, true) {
-                            Ok(SqlResult::Done(o)) => o,
-                            Ok(SqlResult::Busy) => return Err("active: database is locked".into()),
-                            Err(e) => return Err(format!("error: {e:#}")),
-                        },
-                        _ => {
-                            let b = fsutil::read(&job.path).map_err(|e| format!("error: {e:#}"))?;
-                            let o = p.engine.process_bytes(job, &b);
-                            drop(b);
-                            if let Some(nb) = &o.new_bytes {
-                                fsutil::atomic_write(&job.path, nb).map_err(|e| {
-                                    if cfg!(windows) && format!("{e:#}").contains("os error 32") {
-                                        "active: open in another process".to_string()
-                                    } else {
-                                        format!("error: {e:#}")
-                                    }
-                                })?;
-                            }
-                            o
-                        }
-                    };
-                    let mut a = after.lock().unwrap();
-                    for e in &group {
-                        a.insert(
-                            e.id.clone(),
-                            fsutil::hash_file(std::path::Path::new(&e.path)).ok().flatten(),
-                        );
-                    }
-                    Ok(o)
-                })();
+                let r = redact_group(&p.engine, job, &group, &journal).map(|(o, hashes)| {
+                    after.lock().unwrap().extend(hashes);
+                    o
+                });
                 pb.inc(job.size);
                 (i, r)
             })
             .collect();
         pb.finish_and_clear();
-        // Files that were skipped in this pass keep their original hash as "after".
-        {
-            let mut a = after.lock().unwrap();
-            for e in &manifest.entries {
-                a.entry(e.id.clone())
-                    .or_insert_with(|| fsutil::hash_file(std::path::Path::new(&e.path)).ok().flatten());
-            }
+        // Groups skipped in this pass get no after-hash. Clean never wrote
+        // them, so their current contents aren't "as clean left them"; giving
+        // them one made restore silently roll back edits the agent made after
+        // the backup.
+        if crate::fault::hit("after-redact") {
+            // Test hook: die like a crash or Ctrl-C would, before the sidecar.
+            std::process::exit(3);
         }
-        backup::write_after(
+        match backup::write_after(
             &apath,
             &backup::After {
                 archive: apath.display().to_string(),
                 after: after.into_inner().unwrap(),
             },
             &pw,
-        )
-        .context("couldn't write the backup's after-hashes")?;
+        ) {
+            Ok(()) => journal.remove(),
+            Err(e) => {
+                // The files are already redacted, so carry on and report them.
+                // The journal stays, and restore falls back to it.
+                eprintln!(
+                    "error: couldn't write the backup's after-hashes ({e:#}). Restore will use {} instead.",
+                    backup::journal_path(&apath).display()
+                );
+                exit = 2;
+            }
+        }
         for (i, r) in second {
             let job = &p.jobs[i];
             match r {
@@ -405,7 +387,129 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
     ner_stats(&p, &mut engines);
     let report = Report::build("clean", started, t0.elapsed().as_secs_f64(), files, engines, archive);
     emit(&report, opts, &p.notes)?;
-    Ok(0)
+    Ok(exit)
+}
+
+/// Backup entry id -> hash of what clean wrote (None: the file is gone).
+type AfterHashes = Vec<(String, Option<String>)>;
+
+/// The write step for one candidate and its SQLite companions.
+///
+/// Invariant: a file is only replaced if, at the moment of writing, it still
+/// holds exactly the bytes in the backup, and its new hash is in the journal
+/// before it is replaced. The first pass may have run minutes earlier (the
+/// confirmation and password prompts wait on the user), so the lock check is
+/// repeated here too.
+fn redact_group(
+    engine: &Engine,
+    job: &Job,
+    group: &[&backup::Entry],
+    journal: &backup::Journal,
+) -> std::result::Result<(Outcome, AfterHashes), String> {
+    use std::path::Path;
+    for e in group {
+        let p = Path::new(&e.path);
+        if p.exists()
+            && let Some(r) = fsutil::lock_reason(p)
+        {
+            return Err(r);
+        }
+    }
+    let err = |e: anyhow::Error| {
+        if cfg!(windows) && format!("{e:#}").contains("os error 32") {
+            "active: open in another process".to_string()
+        } else {
+            format!("error: {e:#}")
+        }
+    };
+    match job.format {
+        Format::Sqlite => {
+            let precheck = || -> std::result::Result<(), String> {
+                for e in group {
+                    let now = fsutil::hash_file(Path::new(&e.path)).map_err(|e| format!("error: {e:#}"))?;
+                    if now.as_deref() != Some(e.before.as_str()) {
+                        return Err("changed after backup; left as is".into());
+                    }
+                }
+                // A -wal or -journal that wasn't backed up must be empty (our
+                // own connection may have just created it); otherwise another
+                // process wrote to the database after the backup.
+                for c in fsutil::companions(&job.path, true).into_iter().skip(1) {
+                    let backed_up = group.iter().any(|e| Path::new(&e.path) == c);
+                    if !backed_up && std::fs::metadata(&c).is_ok_and(|m| m.len() > 0) {
+                        return Err("changed after backup; left as is".into());
+                    }
+                }
+                Ok(())
+            };
+            match sqlite::process_checked(engine, job, true, Some(&precheck)) {
+                Ok(SqlResult::Done(o)) => {
+                    let mut after = vec![];
+                    for e in group {
+                        let h = fsutil::hash_file(Path::new(&e.path)).ok().flatten();
+                        journal.record(&e.id, h.as_deref()).map_err(err)?;
+                        after.push((e.id.clone(), h));
+                    }
+                    Ok((o, after))
+                }
+                Ok(SqlResult::Busy) => Err("active: database is locked".into()),
+                Ok(SqlResult::Changed(r)) => Err(r),
+                Err(e) => Err(err(e)),
+            }
+        }
+        _ => {
+            let e = group
+                .iter()
+                .find(|e| e.role == "main")
+                .ok_or("error: no backup entry")?;
+            let r = fsutil::rewrite_checked(
+                &job.path,
+                &e.before,
+                |b| {
+                    let mut o = engine.process_bytes(job, b);
+                    let nb = o.new_bytes.take();
+                    (o, nb)
+                },
+                |after| journal.record(&e.id, Some(after)),
+            )
+            .map_err(err)?;
+            match r {
+                // `after` is the hash of the bytes we wrote, not a re-read of
+                // the file, so a write by the agent right after the rename is
+                // never mistaken for our own output.
+                fsutil::Rewrite::Done { value, after } => {
+                    let h = after.unwrap_or_else(|| e.before.clone());
+                    Ok((value, vec![(e.id.clone(), Some(h))]))
+                }
+                fsutil::Rewrite::Changed => Err("changed after backup; left as is".into()),
+            }
+        }
+    }
+}
+
+/// Resolve a `restore` argument: a path to an archive file, an exact backup
+/// name, or a prefix that matches exactly one backup.
+fn resolve_archive(name: &str, list: &[backup::ArchiveInfo]) -> Result<PathBuf> {
+    let p = PathBuf::from(name);
+    if p.is_file() {
+        return Ok(p);
+    }
+    if let Some(a) = list.iter().find(|a| a.name == name) {
+        return Ok(a.path.clone());
+    }
+    let hits: Vec<&backup::ArchiveInfo> = list.iter().filter(|a| a.name.starts_with(name)).collect();
+    match hits.as_slice() {
+        [] => bail!("no backup called '{name}'. Run `sesscrub restore` to list them."),
+        [a] => Ok(a.path.clone()),
+        many => bail!(
+            "'{name}' matches {} backups:\n{}\nGive more of the name.",
+            many.len(),
+            many.iter()
+                .map(|a| format!("  {}", a.name))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
 }
 
 pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
@@ -551,16 +655,8 @@ pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bo
             }
         }
     };
-    let path = {
-        let p = PathBuf::from(&name);
-        if p.is_file() {
-            p
-        } else if let Some(a) = list.iter().find(|a| a.name == name || a.name.starts_with(&name)) {
-            a.path.clone()
-        } else {
-            bail!("no backup called '{name}'. Run `sesscrub restore` to list them.");
-        }
-    };
+    let path = resolve_archive(&name, &list)?;
+    let _lock = crate::paths::lock_data_dir()?;
     let pw = password::resolve(pw_args, Purpose::Restore, quiet)?;
     let interactive = std::io::stdin().is_terminal();
     let pb = bar(0, "restoring", quiet);
@@ -584,6 +680,11 @@ pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bo
     )?;
     pb.finish_and_clear();
     if !quiet {
+        if out.after_source == Some(backup::AfterSource::Journal) {
+            eprintln!(
+                "note: the clean that made this backup was interrupted; used its recovery journal to tell which files it changed."
+            );
+        }
         eprintln!("Restored {} file(s) from {}.", out.restored.len(), path.display());
         if !out.unchanged.is_empty() {
             eprintln!("{} file(s) already matched the backup.", out.unchanged.len());
@@ -593,4 +694,124 @@ pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bo
         }
     }
     Ok(if out.skipped.is_empty() { 0 } else { 2 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::Schema;
+
+    fn engine() -> Engine {
+        Engine {
+            det: Detectors::new(&Config::default(), &[]).unwrap(),
+            tok: Tokenizer::ephemeral(),
+            ner: None,
+        }
+    }
+
+    fn setup(d: &std::path::Path) -> (Job, backup::Entry, backup::Journal) {
+        let path = d.join("s.jsonl");
+        std::fs::write(&path, b"{\"text\":\"mail alice.smith@example.com\"}\n").unwrap();
+        let before = fsutil::hash_file(&path).unwrap().unwrap();
+        let job = Job {
+            tool: "custom",
+            size: 0,
+            path: path.clone(),
+            format: Format::Jsonl,
+            schema: Schema::Generic,
+        };
+        let e = backup::Entry {
+            id: "files/000000".into(),
+            group: 0,
+            role: "main".into(),
+            tool: "custom".into(),
+            path: path.display().to_string(),
+            size: 0,
+            mtime: 0,
+            mode: None,
+            before,
+        };
+        let j = backup::Journal::create(&d.join("sesscrub-20261109-120000.tar.zst.age")).unwrap();
+        (job, e, j)
+    }
+
+    #[test]
+    fn redact_group_writes_and_journals_the_written_hash() {
+        let d = tempfile::tempdir().unwrap();
+        let (job, e, j) = setup(d.path());
+        let (o, after) = redact_group(&engine(), &job, &[&e], &j).unwrap();
+        assert!(o.would_change);
+        let now = fsutil::hash_file(&job.path).unwrap();
+        assert_eq!(after, vec![(e.id.clone(), now)]);
+        let journal = std::fs::read_to_string(d.path().join("sesscrub-20261109-120000.after.journal")).unwrap();
+        assert!(journal.contains(after[0].1.as_deref().unwrap()));
+    }
+
+    #[test]
+    fn redact_group_skips_a_file_changed_since_backup() {
+        let d = tempfile::tempdir().unwrap();
+        let (job, e, j) = setup(d.path());
+        let mut f = std::fs::OpenOptions::new().append(true).open(&job.path).unwrap();
+        std::io::Write::write_all(&mut f, b"{\"text\":\"new turn\"}\n").unwrap();
+        let before = std::fs::read(&job.path).unwrap();
+        let r = redact_group(&engine(), &job, &[&e], &j);
+        assert_eq!(r.err().as_deref(), Some("changed after backup; left as is"));
+        assert_eq!(std::fs::read(&job.path).unwrap(), before);
+    }
+
+    /// Regression: the lock check only ran in the first pass, which can be
+    /// minutes before the write (the prompts wait on the user). A file the
+    /// agent locked in between was replaced anyway.
+    #[cfg(unix)]
+    #[test]
+    fn redact_group_rechecks_locks_before_writing() {
+        let d = tempfile::tempdir().unwrap();
+        let (job, e, j) = setup(d.path());
+        let before = std::fs::read(&job.path).unwrap();
+        let lf = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&job.path)
+            .unwrap();
+        lf.lock().unwrap();
+        let r = redact_group(&engine(), &job, &[&e], &j);
+        lf.unlock().unwrap();
+        assert!(
+            r.as_ref().err().is_some_and(|r| r.starts_with("active")),
+            "{:?}",
+            r.err()
+        );
+        assert_eq!(std::fs::read(&job.path).unwrap(), before);
+    }
+
+    fn info(name: &str) -> backup::ArchiveInfo {
+        backup::ArchiveInfo {
+            path: PathBuf::from("/nonexistent/archives").join(name),
+            name: name.into(),
+            size: 0,
+            modified: chrono::Local::now(),
+        }
+    }
+
+    /// Regression: a prefix matching several backups silently picked the first.
+    #[test]
+    fn ambiguous_prefix_is_refused() {
+        let l = [
+            info("sesscrub-20261109-120000-1.tar.zst.age"),
+            info("sesscrub-20261109-120000.tar.zst.age"),
+            info("sesscrub-20261108-090000.tar.zst.age"),
+        ];
+        let err = resolve_archive("sesscrub-20261109", &l).unwrap_err();
+        assert!(format!("{err}").contains("matches 2 backups"), "{err}");
+        assert_eq!(
+            resolve_archive("sesscrub-20261108", &l).unwrap(),
+            l[2].path,
+            "a unique prefix still works"
+        );
+        assert_eq!(
+            resolve_archive("sesscrub-20261109-120000.tar.zst.age", &l).unwrap(),
+            l[1].path,
+            "an exact name wins even when it is also a prefix of another"
+        );
+    }
 }

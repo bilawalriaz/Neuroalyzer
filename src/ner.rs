@@ -74,7 +74,7 @@ mod imp {
     use orp::params::RuntimeParameters;
     use sha2::Digest;
     use std::collections::{HashMap, HashSet};
-    use std::io::{Read, Write};
+    use std::io::Read;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
 
@@ -146,9 +146,7 @@ mod imp {
             let resp = ureq::get(&url).call().with_context(|| {
                 format!("couldn't download {url}. Check your network or proxy, then run `sesscrub model fetch`.")
             })?;
-            let mut reader = resp.into_body().into_reader();
-            let tmp = d.join(format!("{local}.partial"));
-            let mut f = std::fs::File::create(&tmp)?;
+            let reader = resp.into_body().into_reader();
             let pb = if quiet {
                 indicatif::ProgressBar::hidden()
             } else {
@@ -159,25 +157,9 @@ mod imp {
                     .unwrap()
                     .progress_chars("=> "),
             );
-            let mut h = sha2::Sha256::new();
-            let mut buf = vec![0u8; 1 << 16];
-            loop {
-                let n = reader.read(&mut buf).context("download interrupted")?;
-                if n == 0 {
-                    break;
-                }
-                h.update(&buf[..n]);
-                f.write_all(&buf[..n])?;
-                pb.inc(n as u64);
-            }
+            let r = crate::fsutil::install_verified(&d, local, reader, sha, |n| pb.inc(n));
             pb.finish_and_clear();
-            f.sync_all()?;
-            let got = hex::encode(h.finalize());
-            if got != *sha {
-                let _ = std::fs::remove_file(&tmp);
-                bail!("{local} failed its SHA-256 check (expected {sha}, got {got}). Nothing was kept.");
-            }
-            std::fs::rename(&tmp, &target)?;
+            r?;
         }
         if !quiet {
             eprintln!("NER model ready in {}", d.display());

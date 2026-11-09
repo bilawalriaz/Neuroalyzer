@@ -6,13 +6,19 @@ use crate::discovery::{Job, Schema};
 use crate::engine::{Counts, Engine, Outcome};
 use anyhow::{Context, Result};
 use rusqlite::types::{Value, ValueRef};
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags};
 use std::time::Duration;
 
 pub enum SqlResult {
     Done(Outcome),
     Busy,
+    /// The precheck refused: the files no longer match the backup.
+    Changed(String),
 }
+
+/// Runs inside the write lock, before anything is read. Returns a skip reason
+/// when the database no longer matches what was backed up.
+pub type Precheck<'a> = &'a (dyn Fn() -> std::result::Result<(), String> + Sync);
 
 fn q(id: &str) -> String {
     format!("\"{}\"", id.replace('"', "\"\""))
@@ -68,7 +74,19 @@ fn redact_cell(engine: &Engine, s: &str, col: &str, counts: &mut Counts) -> Opti
     engine.redact_str(s, col, counts)
 }
 
+/// Scan a database, and with `write` redact it.
+///
+/// When writing, the `BEGIN IMMEDIATE` transaction is taken before the
+/// precheck and before any row is read, and the updates commit in that same
+/// transaction. No other connection can commit in between, so the rows that
+/// are redacted are exactly the rows that were backed up. (Before, the hash
+/// check ran with no lock held, and a commit landing between the check and the
+/// rescan was redacted without ever being backed up.)
 pub fn process(engine: &Engine, job: &Job, write: bool) -> Result<SqlResult> {
+    process_checked(engine, job, write, None)
+}
+
+pub fn process_checked(engine: &Engine, job: &Job, write: bool, precheck: Option<Precheck>) -> Result<SqlResult> {
     let flags = if write {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX
     } else {
@@ -84,6 +102,22 @@ pub fn process(engine: &Engine, job: &Job, write: bool) -> Result<SqlResult> {
     }
     .with_context(|| format!("couldn't open {}", job.path.display()))?;
     conn.busy_timeout(Duration::from_secs(2))?;
+    if write {
+        conn.pragma_update(None, "secure_delete", "ON")?;
+        // Plain BEGIN/COMMIT rather than rusqlite's Transaction so the same
+        // connection serves reads, writes and the VACUUM after. Any early
+        // return drops the connection, and SQLite rolls the transaction back.
+        match conn.execute_batch("BEGIN IMMEDIATE") {
+            Ok(()) => {}
+            Err(e) if is_busy(&e) => return Ok(SqlResult::Busy),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if let Some(check) = precheck
+        && let Err(reason) = check()
+    {
+        return Ok(SqlResult::Changed(reason));
+    }
     let mut o = Outcome {
         bytes: job.size,
         ..Default::default()
@@ -197,31 +231,122 @@ pub fn process(engine: &Engine, job: &Job, write: bool) -> Result<SqlResult> {
         });
     }
     o.would_change = !updates.is_empty();
-    if write && !updates.is_empty() {
-        conn.pragma_update(None, "secure_delete", "ON")?;
-        let mut conn = conn;
-        let tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
-            Ok(t) => t,
-            Err(e) if is_busy(&e) => return Ok(SqlResult::Busy),
-            Err(e) => return Err(e.into()),
-        };
-        for (table, col, rowid, val) in &updates {
-            tx.execute(
-                &format!("UPDATE {} SET {} = ?1 WHERE rowid = ?2", q(table), q(col)),
-                rusqlite::params![val, rowid],
-            )?;
-        }
-        tx.commit()?;
-        // Old row versions survive in free pages and slack space from the
-        // app's own earlier updates. VACUUM rebuilds the file without them.
-        match conn.execute_batch("VACUUM") {
-            Ok(()) => {}
-            Err(e) if is_busy(&e) => {}
-            Err(e) => return Err(e).context("VACUUM after redaction"),
-        }
-        // Push everything into the main file and truncate the WAL.
-        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-        conn.close().map_err(|(_, e)| e)?;
+    if !write || updates.is_empty() {
+        return Ok(SqlResult::Done(o));
+    }
+    for (table, col, rowid, val) in &updates {
+        conn.execute(
+            &format!("UPDATE {} SET {} = ?1 WHERE rowid = ?2", q(table), q(col)),
+            rusqlite::params![val, rowid],
+        )?;
+    }
+    conn.execute_batch("COMMIT")?;
+    // From here on the redaction is committed. A later failure must not turn
+    // into an error, or the report would say the file wasn't changed when it
+    // was. It becomes a note instead.
+    let mut after_notes: Vec<String> = vec![];
+    // Old row versions survive in free pages and slack space from the
+    // app's own earlier updates. VACUUM rebuilds the file without them.
+    let vacuum = if crate::fault::hit("vacuum") {
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            Some("injected".into()),
+        ))
+    } else {
+        conn.execute_batch("VACUUM")
+    };
+    match vacuum {
+        Ok(()) => {}
+        Err(e) if is_busy(&e) => after_notes.push("VACUUM skipped (database busy)".into()),
+        Err(e) => after_notes.push(format!(
+            "redacted, but VACUUM failed ({e}); old text may remain in free pages"
+        )),
+    }
+    // Push everything into the main file and truncate the WAL.
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    if let Err((_, e)) = conn.close() {
+        after_notes.push(format!("redacted, but closing the database failed ({e})"));
+    }
+    if !after_notes.is_empty() {
+        let n = after_notes.join("; ");
+        o.drift = Some(match o.drift.take() {
+            Some(d) => format!("{d}; {n}"),
+            None => n,
+        });
     }
     Ok(SqlResult::Done(o))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::{Format, Schema};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn engine() -> Engine {
+        Engine {
+            det: crate::detect::Detectors::new(&crate::config::Config::default(), &[]).unwrap(),
+            tok: crate::token::Tokenizer::ephemeral(),
+            ner: None,
+        }
+    }
+
+    fn db(dir: &std::path::Path) -> Job {
+        let path = dir.join("s.db");
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "PRAGMA journal_mode=WAL; CREATE TABLE m(body TEXT); INSERT INTO m VALUES('mail alice.smith@example.com now');",
+        )
+        .unwrap();
+        drop(c);
+        Job {
+            tool: "custom",
+            size: std::fs::metadata(&path).unwrap().len(),
+            path,
+            format: Format::Sqlite,
+            schema: Schema::Generic,
+        }
+    }
+
+    fn bodies(p: &std::path::Path) -> Vec<String> {
+        let c = Connection::open(p).unwrap();
+        let mut st = c.prepare("SELECT body FROM m ORDER BY rowid").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// Regression: the backup hash check used to run with no lock held, so a
+    /// commit landing before the rewrite was redacted without being backed
+    /// up. The precheck must now run while other writers are shut out.
+    #[test]
+    fn precheck_runs_under_the_write_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let job = db(d.path());
+        let blocked = AtomicBool::new(false);
+        let check = || {
+            let other = Connection::open(&job.path).unwrap();
+            other.busy_timeout(Duration::ZERO).unwrap();
+            let r = other.execute("INSERT INTO m VALUES('bob.jones@example.org')", []);
+            blocked.store(r.as_ref().is_err_and(is_busy), Ordering::SeqCst);
+            Ok(())
+        };
+        let r = process_checked(&engine(), &job, true, Some(&check)).unwrap();
+        assert!(matches!(r, SqlResult::Done(ref o) if o.would_change));
+        assert!(
+            blocked.load(Ordering::SeqCst),
+            "another writer got in during the precheck"
+        );
+        let b = bodies(&job.path);
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert!(!b[0].contains("alice.smith@example.com"), "{b:?}");
+    }
+
+    #[test]
+    fn failed_precheck_changes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let job = db(d.path());
+        let check = || Err("changed after backup; left as is".to_string());
+        let r = process_checked(&engine(), &job, true, Some(&check)).unwrap();
+        assert!(matches!(r, SqlResult::Changed(_)));
+        assert_eq!(bodies(&job.path), ["mail alice.smith@example.com now"]);
+    }
 }

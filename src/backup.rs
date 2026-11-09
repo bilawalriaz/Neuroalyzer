@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 pub const ARCHIVE_EXT: &str = ".tar.zst.age";
 pub const AFTER_EXT: &str = ".after.age";
+pub const JOURNAL_EXT: &str = ".after.journal";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Entry {
@@ -48,6 +49,8 @@ pub struct Manifest {
 pub struct After {
     pub archive: String,
     /// Entry id -> hash after redaction (None: the file no longer exists).
+    /// Only entries clean actually wrote are listed (sidecars written before
+    /// v0.1.1 list every entry).
     pub after: BTreeMap<String, Option<String>>,
 }
 
@@ -91,15 +94,50 @@ impl<R: Read> Read for HashingReader<R> {
     }
 }
 
-fn unique_base(dir: &Path) -> PathBuf {
+/// Pick a fresh archive name and claim it by creating its `.partial` file with
+/// `create_new`, so two runs in the same second can never share (and truncate)
+/// one partial file. A suffix is added on collision: `-1`, `-2`, ...
+fn reserve(dir: &Path) -> Result<(PathBuf, File)> {
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let mut base = dir.join(format!("sesscrub-{ts}"));
-    let mut i = 1;
-    while PathBuf::from(format!("{}{ARCHIVE_EXT}", base.display())).exists() {
-        base = dir.join(format!("sesscrub-{ts}-{i}"));
-        i += 1;
+    for i in 0u32.. {
+        let base = if i == 0 {
+            dir.join(format!("sesscrub-{ts}"))
+        } else {
+            dir.join(format!("sesscrub-{ts}-{i}"))
+        };
+        let final_path = archive_path(&base);
+        if final_path.exists() {
+            continue;
+        }
+        let partial = partial_path(&final_path);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&partial) {
+            Ok(f) => return Ok((final_path, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("couldn't create {}", partial.display())),
+        }
     }
-    base
+    unreachable!()
+}
+
+fn partial_path(p: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.partial", p.display()))
+}
+
+/// Ordering key from an archive file name: (timestamp, collision suffix).
+/// `None` for names sesscrub didn't make.
+pub fn name_key(name: &str) -> Option<(String, u32)> {
+    let stem = name.strip_prefix("sesscrub-")?.strip_suffix(ARCHIVE_EXT)?;
+    let (ts, n) = match stem.get(15..) {
+        Some("") => (stem, 0),
+        Some(rest) => (&stem[..15], rest.strip_prefix('-')?.parse().ok()?),
+        None => return None,
+    };
+    let ok = ts.len() == 15
+        && ts
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| if i == 8 { b == b'-' } else { b.is_ascii_digit() });
+    ok.then(|| (ts.to_string(), n))
 }
 
 pub fn archive_path(base: &Path) -> PathBuf {
@@ -109,6 +147,11 @@ pub fn archive_path(base: &Path) -> PathBuf {
 pub fn after_path(archive: &Path) -> PathBuf {
     let s = archive.display().to_string();
     PathBuf::from(format!("{}{AFTER_EXT}", s.strip_suffix(ARCHIVE_EXT).unwrap_or(&s)))
+}
+
+pub fn journal_path(archive: &Path) -> PathBuf {
+    let s = archive.display().to_string();
+    PathBuf::from(format!("{}{JOURNAL_EXT}", s.strip_suffix(ARCHIVE_EXT).unwrap_or(&s)))
 }
 
 fn file_meta(p: &Path) -> Result<(u64, i64, Option<u32>)> {
@@ -158,11 +201,9 @@ pub fn create(
         sesscrub_version: env!("CARGO_PKG_VERSION").into(),
         entries,
     };
-    let base = unique_base(dir);
-    let final_path = archive_path(&base);
-    let partial = PathBuf::from(format!("{}.partial", final_path.display()));
+    let (final_path, f) = reserve(dir)?;
+    let partial = partial_path(&final_path);
     let result = (|| -> Result<()> {
-        let f = File::create(&partial).with_context(|| format!("couldn't create {}", partial.display()))?;
         crate::paths::make_private(&partial)?;
         let enc = encryptor(pw).wrap_output(BufWriter::with_capacity(1 << 20, f))?;
         let mut z = zstd::Encoder::new(enc, 3)?;
@@ -264,6 +305,25 @@ pub fn write_after(archive: &Path, after: &After, pw: &SecretString) -> Result<(
     Ok(())
 }
 
+/// Where restore got its after-hashes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AfterSource {
+    Sidecar,
+    /// The clean was interrupted before the sidecar was written.
+    Journal,
+    Missing,
+}
+
+pub fn load_after(archive: &Path, pw: &SecretString) -> Result<(Option<After>, AfterSource)> {
+    if let Some(a) = read_after(archive, pw)? {
+        return Ok((Some(a), AfterSource::Sidecar));
+    }
+    match read_journal(&journal_path(archive))? {
+        Some(a) => Ok((Some(a), AfterSource::Journal)),
+        None => Ok((None, AfterSource::Missing)),
+    }
+}
+
 pub fn read_after(archive: &Path, pw: &SecretString) -> Result<Option<After>> {
     let p = after_path(archive);
     if !p.exists() {
@@ -301,20 +361,104 @@ pub fn list(dir: &Path) -> Vec<ArchiveInfo> {
             })
         })
         .collect();
-    v.sort_by(|a, b| b.name.cmp(&a.name));
+    // Newest first. Compare the timestamp, then the collision suffix as a
+    // number: plain name order puts `-1` below the un-suffixed archive of the
+    // same second and `-10` below `-2`. Names sesscrub didn't make go last.
+    v.sort_by(|a, b| match (name_key(&a.name), name_key(&b.name)) {
+        (Some(x), Some(y)) => y.cmp(&x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.name.cmp(&a.name),
+    });
     v
 }
 
 /// Keep the newest `keep` archives (and their sidecars); delete the rest.
+/// Only archives with names sesscrub made are counted or deleted. Leftover
+/// `.partial` files from interrupted runs are removed too: the caller holds the
+/// run lock, so no other run can be writing one.
 pub fn prune(dir: &Path, keep: usize) -> Vec<PathBuf> {
     let mut removed = vec![];
-    for a in list(dir).into_iter().skip(keep.max(1)) {
+    let ours = list(dir).into_iter().filter(|a| name_key(&a.name).is_some());
+    for a in ours.skip(keep.max(1)) {
         if std::fs::remove_file(&a.path).is_ok() {
             let _ = std::fs::remove_file(after_path(&a.path));
+            let _ = std::fs::remove_file(journal_path(&a.path));
             removed.push(a.path);
         }
     }
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if n.starts_with("sesscrub-") && n.ends_with(".partial") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
     removed
+}
+
+// ---------- after-hash journal ----------
+
+/// Crash-safe record of after-redaction hashes, written while `clean` runs.
+///
+/// The encrypted sidecar can only be written once the whole redaction pass is
+/// over. A run that stops before then (Ctrl-C, crash, power loss, disk full)
+/// would leave redacted files with no after-hashes, and restore would then
+/// treat every one of them as edited since cleaning. The journal closes that
+/// gap: each hash is appended and fsynced before the file it describes is
+/// replaced, so it is never behind the disk. It holds only entry ids and
+/// BLAKE3 hashes of redacted content, never file contents, and is owner-only.
+/// It is deleted once the sidecar is safely written.
+pub struct Journal {
+    path: PathBuf,
+    f: std::sync::Mutex<File>,
+}
+
+impl Journal {
+    pub fn create(archive: &Path) -> Result<Self> {
+        let path = journal_path(archive);
+        let f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .with_context(|| format!("couldn't create {}", path.display()))?;
+        crate::paths::make_private(&path)?;
+        Ok(Self {
+            path,
+            f: std::sync::Mutex::new(f),
+        })
+    }
+
+    /// Record that entry `id` now hashes to `hash` (`None`: the file is gone).
+    pub fn record(&self, id: &str, hash: Option<&str>) -> Result<()> {
+        let mut f = self.f.lock().unwrap();
+        writeln!(f, "{id}\t{}", hash.unwrap_or("-"))?;
+        f.sync_data()?;
+        Ok(())
+    }
+
+    /// The sidecar now holds everything; drop the journal.
+    pub fn remove(self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn read_journal(p: &Path) -> Result<Option<After>> {
+    let s = match std::fs::read_to_string(p) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("couldn't read {}", p.display())),
+    };
+    let mut a = After::default();
+    // A torn last line (crash mid-append) is ignored; later lines win.
+    for line in s.lines() {
+        if let Some((id, h)) = line.split_once('\t')
+            && id.starts_with("files/")
+            && (h == "-" || (h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())))
+        {
+            a.after.insert(id.to_string(), (h != "-").then(|| h.to_string()));
+        }
+    }
+    Ok(Some(a))
 }
 
 // ---------- restore ----------
@@ -324,6 +468,7 @@ pub struct RestoreOutcome {
     pub restored: Vec<String>,
     pub unchanged: Vec<String>,
     pub skipped: Vec<(String, String)>,
+    pub after_source: Option<AfterSource>,
 }
 
 pub enum Decision {
@@ -340,14 +485,17 @@ pub fn restore(
     mut decide: impl FnMut(&Entry) -> bool,
     progress: &indicatif::ProgressBar,
 ) -> Result<RestoreOutcome> {
-    let after = read_after(archive, pw)?;
+    let (after, source) = load_after(archive, pw)?;
     let f = File::open(archive).with_context(|| format!("couldn't open {}", archive.display()))?;
     let dec = decrypt_reader(BufReader::with_capacity(1 << 20, f), pw)?;
     let z = zstd::Decoder::new(dec)?;
     let mut ar = tar::Archive::new(z);
     let mut manifest: Option<Manifest> = None;
-    let mut out = RestoreOutcome::default();
-    let mut group_decision: BTreeMap<usize, bool> = BTreeMap::new();
+    let mut out = RestoreOutcome {
+        after_source: Some(source),
+        ..Default::default()
+    };
+    let mut group_decision: BTreeMap<usize, Result<bool, String>> = BTreeMap::new();
     for ent in ar.entries()? {
         let mut ent = ent?;
         let name = ent.path()?.to_string_lossy().to_string();
@@ -368,33 +516,56 @@ pub fn restore(
         let target = PathBuf::from(&e.path);
         let current = crate::fsutil::hash_file(&target)?;
         // Decide once per group (the main file comes first).
-        let go = *group_decision.entry(e.group).or_insert_with(|| {
-            let group: Vec<&Entry> = m.entries.iter().filter(|x| x.group == e.group).collect();
-            let all_original = group.iter().all(|x| {
-                crate::fsutil::hash_file(Path::new(&x.path)).ok().flatten().as_deref() == Some(x.before.as_str())
-            });
-            if all_original {
-                return false;
-            }
-            let matches_after = after.as_ref().is_some_and(|a| {
-                group.iter().all(|x| {
-                    let now = crate::fsutil::hash_file(Path::new(&x.path)).ok().flatten();
-                    a.after.get(&x.id).map(|h| h.as_deref()) == Some(now.as_deref())
-                })
-            });
-            matches_after || force || decide(&e)
-        });
+        let go = group_decision
+            .entry(e.group)
+            .or_insert_with(|| {
+                let group: Vec<&Entry> = m.entries.iter().filter(|x| x.group == e.group).collect();
+                let all_original = group.iter().all(|x| {
+                    crate::fsutil::hash_file(Path::new(&x.path)).ok().flatten().as_deref() == Some(x.before.as_str())
+                });
+                if all_original {
+                    return Ok(false);
+                }
+                // Replacing a file another process holds open loses that
+                // process's later writes (they go to the old inode) or gets
+                // overwritten by them. Never do it, even with --force.
+                if let Some(r) = group.iter().find_map(|x| {
+                    let p = Path::new(&x.path);
+                    if p.exists() { crate::fsutil::lock_reason(p) } else { None }
+                }) {
+                    return Err(format!("{r}; not overwritten. Close the app and run restore again"));
+                }
+                let matches_after = after.as_ref().is_some_and(|a| {
+                    group.iter().all(|x| {
+                        let now = crate::fsutil::hash_file(Path::new(&x.path)).ok().flatten();
+                        a.after.get(&x.id).map(|h| h.as_deref()) == Some(now.as_deref())
+                    })
+                });
+                if matches_after || force {
+                    return Ok(true);
+                }
+                let untouched = source == AfterSource::Sidecar
+                    && after.as_ref().is_some_and(|a| group.iter().all(|x| !a.after.contains_key(&x.id)));
+                if untouched {
+                    return Err(
+                        "clean didn't change this file (it changed on its own after the backup); not overwritten (use --force)"
+                            .into(),
+                    );
+                }
+                Ok(decide(&e))
+            })
+            .clone();
         if current.as_deref() == Some(e.before.as_str()) {
             out.unchanged.push(e.path.clone());
             std::io::copy(&mut ent, &mut std::io::sink())?;
             progress.inc(e.size);
             continue;
         }
-        if !go {
-            out.skipped.push((
-                e.path.clone(),
-                "changed since cleaning; not overwritten (use --force)".into(),
-            ));
+        if go != Ok(true) {
+            let reason = go
+                .err()
+                .unwrap_or_else(|| "changed since cleaning; not overwritten (use --force)".into());
+            out.skipped.push((e.path.clone(), reason));
             std::io::copy(&mut ent, &mut std::io::sink())?;
             progress.inc(e.size);
             continue;
@@ -449,4 +620,151 @@ pub fn restore(
         bail!("the archive is empty or damaged");
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    #[test]
+    fn name_key_parses_sesscrub_names_only() {
+        assert_eq!(
+            name_key("sesscrub-20261109-120000.tar.zst.age"),
+            Some(("20261109-120000".into(), 0))
+        );
+        assert_eq!(
+            name_key("sesscrub-20261109-120000-12.tar.zst.age"),
+            Some(("20261109-120000".into(), 12))
+        );
+        assert_eq!(name_key("my-copy.tar.zst.age"), None);
+        assert_eq!(name_key("sesscrub-2026-11-09.tar.zst.age"), None);
+        assert_eq!(name_key("sesscrub-20261109-120000-x.tar.zst.age"), None);
+    }
+
+    /// Regression: `-1` sorted below the un-suffixed archive of the same second
+    /// and `-10` below `-2`, so list showed them out of order and prune deleted
+    /// the newest backup.
+    #[test]
+    fn collision_suffixes_sort_newest_first() {
+        let d = tempfile::tempdir().unwrap();
+        for n in [
+            "sesscrub-20261109-115959.tar.zst.age",
+            "sesscrub-20261109-120000.tar.zst.age",
+            "sesscrub-20261109-120000-1.tar.zst.age",
+            "sesscrub-20261109-120000-2.tar.zst.age",
+            "sesscrub-20261109-120000-10.tar.zst.age",
+        ] {
+            touch(d.path(), n);
+        }
+        let names: Vec<String> = list(d.path()).into_iter().map(|a| a.name).collect();
+        assert_eq!(
+            names,
+            [
+                "sesscrub-20261109-120000-10.tar.zst.age",
+                "sesscrub-20261109-120000-2.tar.zst.age",
+                "sesscrub-20261109-120000-1.tar.zst.age",
+                "sesscrub-20261109-120000.tar.zst.age",
+                "sesscrub-20261109-115959.tar.zst.age",
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_collision_and_foreign_files() {
+        let d = tempfile::tempdir().unwrap();
+        for n in [
+            "sesscrub-20261109-120000.tar.zst.age",
+            "sesscrub-20261109-120000.after.age",
+            "sesscrub-20261109-120000-1.tar.zst.age",
+            "sesscrub-20261109-120000-1.after.age",
+            "hand-copied.tar.zst.age",
+            "sesscrub-20261109-110000.tar.zst.age.partial",
+        ] {
+            touch(d.path(), n);
+        }
+        let removed = prune(d.path(), 1);
+        assert_eq!(removed.len(), 1);
+        let mut left: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "hand-copied.tar.zst.age",
+                "sesscrub-20261109-120000-1.after.age",
+                "sesscrub-20261109-120000-1.tar.zst.age",
+            ]
+        );
+    }
+
+    /// Regression: two runs in the same second both opened the same
+    /// `.partial` with `File::create`, truncating each other's archive.
+    #[test]
+    fn concurrent_reservations_get_distinct_names() {
+        let d = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8).map(|_| s.spawn(|| reserve(d.path()).unwrap().0)).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let uniq: std::collections::BTreeSet<_> = paths.iter().collect();
+        assert_eq!(uniq.len(), paths.len(), "{paths:?}");
+    }
+
+    #[test]
+    fn journal_round_trip_ignores_torn_lines() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("sesscrub-20261109-120000.tar.zst.age");
+        let j = Journal::create(&a).unwrap();
+        let h = "a".repeat(64);
+        j.record("files/000000", Some(&h)).unwrap();
+        j.record("files/000001", None).unwrap();
+        j.record("files/000000", Some(&"b".repeat(64))).unwrap();
+        drop(j);
+        let mut f = std::fs::OpenOptions::new().append(true).open(journal_path(&a)).unwrap();
+        f.write_all(b"files/000002\tabc").unwrap();
+        let got = read_journal(&journal_path(&a)).unwrap().unwrap();
+        assert_eq!(got.after.len(), 2);
+        assert_eq!(got.after["files/000000"].as_deref(), Some("b".repeat(64).as_str()));
+        assert_eq!(got.after["files/000001"], None);
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+
+    /// Regression: clean used to give files it skipped (because they changed
+    /// after the backup) an after-hash equal to their new contents, so restore
+    /// thought they were "as clean left them" and rolled the agent's edits back
+    /// to the older backup copy without asking.
+    #[test]
+    fn restore_leaves_files_clean_never_wrote() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("s.jsonl");
+        std::fs::write(&f, b"original\n").unwrap();
+        let pw = SecretString::from("correct horse battery staple 42".to_string());
+        let src = [Source {
+            group: 0,
+            role: "main",
+            tool: "custom".into(),
+            path: f.clone(),
+        }];
+        let pb = indicatif::ProgressBar::hidden();
+        let (a, _) = create(&src, &pw, &d.path().join("archives"), &pb).unwrap();
+        // Clean skipped the file: the agent appended after the backup.
+        std::fs::write(&f, b"original\nnew turn\n").unwrap();
+        write_after(&a, &After::default(), &pw).unwrap();
+        let out = restore(&a, &pw, false, |_| panic!("must not ask"), &pb).unwrap();
+        assert!(out.restored.is_empty());
+        assert_eq!(out.skipped.len(), 1);
+        assert!(out.skipped[0].1.contains("clean didn't change"), "{:?}", out.skipped);
+        assert_eq!(std::fs::read(&f).unwrap(), b"original\nnew turn\n");
+    }
 }

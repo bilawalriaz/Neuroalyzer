@@ -63,3 +63,32 @@ pub fn make_private(p: &Path) -> Result<()> {
     let _ = p;
     Ok(())
 }
+
+/// Held for the whole of `clean` and `restore`. Two such runs at once could
+/// race on the same session files and archive names, and one run's prune could
+/// delete the backup another is still writing or reading, so only one runs at a
+/// time per data dir. The OS releases the lock when the process exits, even on
+/// a crash, so it never goes stale.
+pub struct RunLock {
+    _f: std::fs::File,
+}
+
+pub fn lock_data_dir() -> Result<RunLock> {
+    let d = data_dir();
+    ensure_private_dir(&d)?;
+    let p = d.join("sesscrub.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&p)
+        .with_context(|| format!("couldn't open {}", p.display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(RunLock { _f: f }),
+        Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
+            "another sesscrub clean or restore is running (it holds {}). Wait for it to finish, then try again.",
+            p.display()
+        ),
+        Err(std::fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("couldn't lock {}", p.display())),
+    }
+}
