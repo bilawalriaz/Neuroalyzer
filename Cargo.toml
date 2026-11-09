@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "crates/fixturegen"]
+exclude = ["vendor"]
 
 [package]
 name = "sesscrub"
@@ -59,3 +60,8 @@ strip = true
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Windows: esaxx-rs (via gline-rs -> tokenizers) forces the static CRT, which
+# can't link with ONNX Runtime's dynamic-CRT build. See vendor/esaxx-rs/build.rs.
+[patch.crates-io]
+esaxx-rs = { path = "vendor/esaxx-rs" }
