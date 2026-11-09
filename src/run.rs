@@ -119,6 +119,7 @@ fn fmt_name(f: Format) -> &'static str {
         Format::Jsonl => "jsonl",
         Format::Sqlite => "sqlite",
         Format::Text => "text",
+        Format::JsonlZst => "jsonl.zst",
     }
 }
 

@@ -144,6 +144,7 @@ pub fn process_checked(engine: &Engine, job: &Job, write: bool, precheck: Option
         Schema::OpencodeDb => ["session_part", "part", "session_message", "message", "messages"]
             .iter()
             .any(|t| names.contains(t)),
+        Schema::HermesDb => names.contains(&"messages") && names.contains(&"sessions"),
         _ => true,
     };
     if !expected_ok {

@@ -196,13 +196,16 @@ impl Engine {
             }
             // Text is redacted line by line, so prepare the same units.
             Format::Text => texts.extend(String::from_utf8_lossy(raw).split_inclusive('\n').map(str::to_owned)),
-            Format::Sqlite => {}
+            Format::Sqlite | Format::JsonlZst => {}
         }
         ner.prepare(texts.iter().map(String::as_str));
     }
 
     /// Process a JSON, JSONL or text file held in memory.
     pub fn process_bytes(&self, job: &Job, raw: &[u8]) -> Outcome {
+        if job.format == Format::JsonlZst {
+            return self.process_zst(job, raw);
+        }
         let mut o = Outcome {
             bytes: raw.len() as u64,
             ..Default::default()
@@ -238,13 +241,46 @@ impl Engine {
             },
             Format::Jsonl => self.redact_jsonl(raw, &mut o.counts, &mut line_drift),
             Format::Text => self.redact_text(raw, &mut o.counts),
-            Format::Sqlite => None,
+            Format::Sqlite | Format::JsonlZst => None,
         };
         if line_drift {
             o.drift
                 .get_or_insert_with(|| "some lines weren't JSON; handled them as text".into());
         }
         o.would_change = o.new_bytes.is_some();
+        o
+    }
+}
+
+impl Engine {
+    /// Decompress, redact as JSONL, recompress. A file that won't decompress
+    /// is reported and left alone.
+    fn process_zst(&self, job: &Job, raw: &[u8]) -> Outcome {
+        let plain = match zstd::stream::decode_all(raw) {
+            Ok(p) => p,
+            Err(e) => {
+                return Outcome {
+                    bytes: raw.len() as u64,
+                    drift: Some(format!("couldn't decompress zstd ({e}); left as is")),
+                    ..Default::default()
+                };
+            }
+        };
+        let inner = Job {
+            format: Format::Jsonl,
+            ..job.clone()
+        };
+        let mut o = self.process_bytes(&inner, &plain);
+        o.bytes = raw.len() as u64;
+        if let Some(nb) = o.new_bytes.take() {
+            match zstd::stream::encode_all(&nb[..], 3) {
+                Ok(c) => o.new_bytes = Some(c),
+                Err(e) => {
+                    o.drift = Some(format!("couldn't recompress zstd ({e}); left as is"));
+                    o.would_change = false;
+                }
+            }
+        }
         o
     }
 }
@@ -268,7 +304,10 @@ fn schema_drift(schema: Schema, raw: &[u8], format: Format) -> Option<String> {
         Schema::CopilotEvents => first_line().is_some_and(|v| v.get("type").is_some() && v.get("data").is_some()),
         Schema::OmpSession => first_line().is_some_and(|v| v.get("type").and_then(|t| t.as_str()) == Some("session")),
         Schema::OpencodeJson => has("\"id\""),
-        Schema::VscodeState | Schema::OpencodeDb => true,
+        Schema::ClaudeSession | Schema::DroidSession => first_line().is_some_and(|v| v.get("type").is_some()),
+        Schema::CodexRollout => first_line().is_some_and(|v| v.get("type").is_some() && v.get("payload").is_some()),
+        Schema::GeminiChat => has("\"messages\"") || has("\"sessionId\""),
+        Schema::VscodeState | Schema::OpencodeDb | Schema::HermesDb => true,
     };
     if ok {
         None

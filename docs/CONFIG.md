@@ -106,4 +106,9 @@ These variables change where sesscrub looks for session data. They are ignored w
 | `XDG_STATE_HOME` | Adds `$XDG_STATE_HOME/.copilot` for Copilot CLI. |
 | `XDG_DATA_HOME` | Adds OpenCode and omp data directories. |
 | `OPENCODE_DB` | Exact OpenCode database file. |
-| `PI_CODING_AGENT_DIR` | omp agent directory. |
+| `PI_CODING_AGENT_DIR` | omp/pi agent directory. |
+| `CLAUDE_CONFIG_DIR` | Claude Code config directory (default `~/.claude`). |
+| `CODEX_HOME` | Codex CLI home (default `~/.codex`). |
+| `GEMINI_CLI_HOME` | Adds `$GEMINI_CLI_HOME/.gemini` for Gemini CLI. |
+| `HERMES_HOME` | Hermes Agent home (default `~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows). |
+| `OPENCLAW_STATE_DIR` | OpenClaw state directory (default `~/.openclaw`; legacy `~/.clawdbot` and `~/.moltbot` are also checked). |

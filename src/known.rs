@@ -73,9 +73,25 @@ pub fn project_dirs(jobs: &[Job], root: Option<&Path>) -> Vec<PathBuf> {
                     }
                 }
             }
-            Schema::OmpSession => {
+            Schema::OmpSession | Schema::DroidSession if j.format == Format::Jsonl => {
                 for v in first_lines(&j.path, 1) {
                     if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+                        dirs.insert(PathBuf::from(c));
+                    }
+                }
+            }
+            Schema::ClaudeSession => {
+                // The first lines can be queue operations without a cwd.
+                if let Some(c) = first_lines(&j.path, 20)
+                    .iter()
+                    .find_map(|v| v.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from))
+                {
+                    dirs.insert(c);
+                }
+            }
+            Schema::CodexRollout if j.format == Format::Jsonl => {
+                for v in first_lines(&j.path, 1) {
+                    if let Some(c) = v.pointer("/payload/cwd").and_then(|c| c.as_str()) {
                         dirs.insert(PathBuf::from(c));
                     }
                 }

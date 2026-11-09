@@ -387,8 +387,11 @@ fn list_works() {
     let o = fx.run(&["list", "--root", &fx.root_s(), "--json"]);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    // The fixture generator only builds trees for these three tools.
     for t in v["tools"].as_array().unwrap() {
-        assert!(t["files"].as_u64().unwrap() > 0, "{t}");
+        if ["copilot", "opencode", "omp"].iter().any(|n| t["tool"] == *n) {
+            assert!(t["files"].as_u64().unwrap() > 0, "{t}");
+        }
     }
 }
 
