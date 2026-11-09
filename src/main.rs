@@ -5,7 +5,7 @@ use sesscrub::run::{self, ScanOpts};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const ABOUT: &str = "Find the local session data of AI coding agents (GitHub Copilot, OpenCode, omp), back it up encrypted, and redact secrets and personal data in place.";
+const ABOUT: &str = "Find the local session data of AI coding agents (Claude Code, Codex, Gemini CLI, GitHub Copilot, OpenCode, Hermes Agent, OpenClaw, Factory Droid, pi, omp), back it up encrypted, and redact secrets and personal data in place.";
 
 const AFTER_HELP: &str = "Exit codes: 0 = clean, 1 = scan found something, 2 = error.
 
@@ -32,7 +32,7 @@ struct Cli {
 
 #[derive(Args, Clone)]
 struct Common {
-    /// Only these tools, comma-separated: copilot, opencode, omp.
+    /// Only these tools, comma-separated: copilot, opencode, omp, claude, codex, gemini, hermes, openclaw, droid, pi.
     #[arg(long, value_delimiter = ',', value_name = "TOOLS")]
     only: Vec<String>,
     /// Look for session data under this dir instead of your home dir. Use it to test on a copy.

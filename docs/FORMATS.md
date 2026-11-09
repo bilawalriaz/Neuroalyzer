@@ -213,3 +213,51 @@ TypeScript on Bun, package `@oh-my-pi/coding-agent`.
 - Session transcripts are JSONL. `FileSessionStorage` is constructed in main.ts [OMP packages/coding-agent/src/main.ts#L229].
 - A `Bun.SQL`-backed session store (postgres/mysql/sqlite adapters) exists in packages/coding-agent/src/session/sql-session-storage.ts. Whether any user config selects it: UNVERIFIED.
 - Other SQLite files in the agent dir: `agent.db` (credential store, docs/providers.md#L67), `stats.db` (gc-cli.ts#L1741), model cache `models.db` (model-registry.ts#L643). Blob store: `<agentDir>/blobs` (dirs.ts `getBlobsDir`).
+
+## Agents added in 1.2.0
+
+Researched on 2026-11-09. Hermes and OpenClaw paths were read from upstream source at the commits below. The others were confirmed against real session stores on macOS, with no upstream pin, so treat their Windows and Linux layouts as UNVERIFIED beyond "same relative path under the home directory".
+
+### Claude Code (`claude`)
+- Home: `~/.claude`, or `$CLAUDE_CONFIG_DIR`.
+- `projects/<cwd with / replaced by ->/<sessionId>.jsonl`: one JSON object per line. Every line has `type` (`user`, `assistant`, `summary`, `queue-operation`, ...). Message lines carry `cwd`, `sessionId`, `uuid` and `message`. sesscrub reads `cwd` from the first 20 lines to find project `.env` files.
+- `projects/*/<sessionId>/subagents/agent-*.jsonl`: same shape, for subagents.
+- `projects/*/<sessionId>/tool-results/*`: large tool outputs spilled to disk (text; images are skipped as binary).
+- `projects/*/memory/*.md`, `plans/*.md`, `todos/*.json`, `history.jsonl` (prompt history), `paste-cache/*`.
+- `file-history/<sessionId>/<hash>@vN`: snapshots of files Claude edited, kept for rewind. They hold project source, so secrets in code end up here.
+- Not touched: `settings.json`, `sessions/*.json` (live process records), `shell-snapshots/`, `plugins/`, `skills/`.
+
+### Codex CLI (`codex`)
+- Home: `~/.codex`, or `$CODEX_HOME`.
+- `sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`: envelope `{timestamp, type, payload}`. The first line is `type: "session_meta"` with `payload.cwd`.
+- `archived_sessions/rollout-*.jsonl` and `*.jsonl.zst`: archived rollouts, newer ones zstd-compressed. sesscrub decompresses in memory, redacts as JSONL and recompresses (level 3).
+- `history.jsonl` (`{session_id, ts, text}`), `session_index.jsonl` (thread names).
+- SQLite: `state_*.sqlite` (`threads` holds `title`, `first_user_message`, `cwd`, `git_origin_url`), `thread_history_*.sqlite` (`thread_items`), `memories_*.sqlite`. `logs_*.sqlite`, `goals_*` and `queue_*` are left alone.
+- Not touched: `auth.json`, `config.toml`.
+
+### Gemini CLI (`gemini`)
+- Home: `~/.gemini` (or `$GEMINI_CLI_HOME/.gemini`).
+- `tmp/<sha256 of project path>/chats/session-<ts>-<id>.json`: `{sessionId, projectHash, startTime, lastUpdated, messages[]}`.
+- `tmp/<hash>/logs.json` (prompt log) and `tmp/<hash>/checkpoint*.json` (saved chats).
+- Not touched: `oauth_creds.json`, `google_accounts.json`, `settings.json`, `antigravity*/` (binary protobuf).
+
+### Hermes Agent (`hermes`)
+Source: `NousResearch/hermes-agent` @ `6cff782b`.
+- Home: `$HERMES_HOME`, else `~/.hermes` (`%LOCALAPPDATA%\hermes` on Windows); `HERMES_DATA_DIR_SUFFIX` can append a suffix (not followed). `hermes_constants.py`, `_platform_default_hermes_home`.
+- `state.db`: SQLite with `sessions` and `messages` (`content`, `tool_calls`, `reasoning`, ...). `hermes_state_common.py` `SCHEMA_SQL`. The `messages_fts*` FTS5 tables are external-content indexes kept in sync by `AFTER UPDATE` triggers, so sesscrub skips them and the triggers re-index the redacted rows.
+- `sessions/<id>.json`, `<id>.jsonl`, `session_<id>.json` and `sessions.json` (`hermes_state_sessions.py`, `hermes_state.py`).
+- Profiles: `profiles/<name>/state.db` and `profiles/<name>/sessions/` (`hermes_state_profile_repair.py`).
+- Not touched: `.env`, `auth.json`, `config.yaml`.
+
+### OpenClaw (`openclaw`)
+Source: `openclaw/openclaw` @ `21c0b48bf`.
+- State dir: `$OPENCLAW_STATE_DIR`, else `~/.openclaw`; older installs used `~/.clawdbot` and `~/.moltbot` (`src/infra/state-migrations.state-dir.ts`).
+- Transcripts: `agents/<agentId>/sessions/<sessionId>.jsonl` with a `sessions.json` index (`src/config/sessions/paths.ts`). The header line is `{type: "session", ...}`, the pi format.
+- Per-agent SQLite: `agents/<agentId>/agent/openclaw-agent.sqlite` (`transcript_events`, `conversations`, `session_*`; `src/state/openclaw-agent-*schema.ts`). Its `session_transcript_fts` virtual table is skipped.
+- Not touched: `credentials.sqlite`, `state/openclaw.sqlite` (gateway state, device pairing), `.env`.
+
+### Factory Droid (`droid`)
+- `~/.factory/sessions/<cwd slug>/<uuid>.jsonl`; first line `{type: "session_start", cwd, ...}`. `*.settings.json` beside it is not touched.
+
+### pi (`pi`)
+- `~/.pi/agent/sessions/<cwd slug>/<ts>_<uuid>.jsonl`, the format omp forked from (first line `{type: "session", cwd, ...}`).

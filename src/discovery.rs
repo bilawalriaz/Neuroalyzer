@@ -10,6 +10,9 @@ pub enum Format {
     Jsonl,
     Sqlite,
     Text,
+    /// Zstandard-compressed JSON lines (Codex archived rollouts). Decompressed
+    /// in memory, redacted as JSONL, then recompressed.
+    JsonlZst,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -21,6 +24,11 @@ pub enum Schema {
     OpencodeJson,
     VscodeState,
     OpencodeDb,
+    ClaudeSession,
+    CodexRollout,
+    GeminiChat,
+    DroidSession,
+    HermesDb,
 }
 
 impl Schema {
@@ -29,10 +37,15 @@ impl Schema {
             Schema::Generic => "generic",
             Schema::VscodeChat => "VS Code chat session",
             Schema::CopilotEvents => "Copilot CLI events",
-            Schema::OmpSession => "omp session",
+            Schema::OmpSession => "pi-style session",
             Schema::OpencodeJson => "OpenCode storage JSON",
             Schema::VscodeState => "VS Code state.vscdb",
             Schema::OpencodeDb => "OpenCode database",
+            Schema::ClaudeSession => "Claude Code transcript",
+            Schema::CodexRollout => "Codex rollout",
+            Schema::GeminiChat => "Gemini CLI chat",
+            Schema::DroidSession => "Factory Droid session",
+            Schema::HermesDb => "Hermes state.db",
         }
     }
 }
@@ -50,6 +63,13 @@ pub const TOOLS: &[(&str, &str)] = &[
     ("copilot", "GitHub Copilot (VS Code chat and Copilot CLI)"),
     ("opencode", "OpenCode"),
     ("omp", "omp (oh-my-pi)"),
+    ("claude", "Claude Code"),
+    ("codex", "OpenAI Codex CLI"),
+    ("gemini", "Gemini CLI"),
+    ("hermes", "Hermes Agent"),
+    ("openclaw", "OpenClaw"),
+    ("droid", "Factory Droid"),
+    ("pi", "pi coding agent"),
 ];
 
 #[derive(Clone, Copy)]
@@ -58,6 +78,13 @@ enum Base {
     CopilotHome,
     OpencodeData,
     OmpAgent,
+    ClaudeHome,
+    CodexHome,
+    GeminiHome,
+    HermesHome,
+    OpenclawState,
+    FactoryHome,
+    PiAgent,
 }
 
 struct Loc {
@@ -244,6 +271,100 @@ const REGISTRY: &[Loc] = &[
         Jsonl,
         Schema::OmpSession,
     ),
+    // Claude Code: one JSONL transcript per session, per project.
+    loc("claude", ClaudeHome, "projects/*/*.jsonl", Jsonl, Schema::ClaudeSession),
+    loc(
+        "claude",
+        ClaudeHome,
+        "projects/*/*/subagents/*.jsonl",
+        Jsonl,
+        Schema::ClaudeSession,
+    ),
+    loc(
+        "claude",
+        ClaudeHome,
+        "projects/*/*/tool-results/*",
+        Text,
+        Schema::Generic,
+    ),
+    loc("claude", ClaudeHome, "projects/*/memory/*.md", Text, Schema::Generic),
+    loc("claude", ClaudeHome, "history.jsonl", Jsonl, Schema::Generic),
+    loc("claude", ClaudeHome, "plans/*.md", Text, Schema::Generic),
+    loc("claude", ClaudeHome, "todos/*.json", Json, Schema::Generic),
+    loc("claude", ClaudeHome, "paste-cache/*", Text, Schema::Generic),
+    // Snapshots of files Claude edited, kept for rewind.
+    loc("claude", ClaudeHome, "file-history/*/*", Text, Schema::Generic),
+    // Codex: rollouts by date, archived rollouts (often zstd), SQLite state.
+    loc("codex", CodexHome, "sessions/**/*.jsonl", Jsonl, Schema::CodexRollout),
+    loc(
+        "codex",
+        CodexHome,
+        "sessions/**/*.jsonl.zst",
+        JsonlZst,
+        Schema::CodexRollout,
+    ),
+    loc(
+        "codex",
+        CodexHome,
+        "archived_sessions/*.jsonl",
+        Jsonl,
+        Schema::CodexRollout,
+    ),
+    loc(
+        "codex",
+        CodexHome,
+        "archived_sessions/*.jsonl.zst",
+        JsonlZst,
+        Schema::CodexRollout,
+    ),
+    loc("codex", CodexHome, "history.jsonl", Jsonl, Schema::Generic),
+    loc("codex", CodexHome, "session_index.jsonl", Jsonl, Schema::Generic),
+    loc("codex", CodexHome, "state_*.sqlite", Sqlite, Schema::Generic),
+    loc("codex", CodexHome, "thread_history_*.sqlite", Sqlite, Schema::Generic),
+    loc("codex", CodexHome, "memories_*.sqlite", Sqlite, Schema::Generic),
+    // Gemini CLI: per-project chats and prompt logs under tmp/<project hash>.
+    loc("gemini", GeminiHome, "tmp/*/chats/*.json", Json, Schema::GeminiChat),
+    loc("gemini", GeminiHome, "tmp/*/logs.json", Json, Schema::Generic),
+    loc("gemini", GeminiHome, "tmp/*/checkpoint*.json", Json, Schema::Generic),
+    // Hermes Agent: SQLite session store plus JSON/JSONL session logs, per profile.
+    loc("hermes", HermesHome, "state.db", Sqlite, Schema::HermesDb),
+    loc("hermes", HermesHome, "sessions/*.json", Json, Schema::Generic),
+    loc("hermes", HermesHome, "sessions/*.jsonl", Jsonl, Schema::Generic),
+    loc("hermes", HermesHome, "profiles/*/state.db", Sqlite, Schema::HermesDb),
+    loc(
+        "hermes",
+        HermesHome,
+        "profiles/*/sessions/*.json",
+        Json,
+        Schema::Generic,
+    ),
+    loc(
+        "hermes",
+        HermesHome,
+        "profiles/*/sessions/*.jsonl",
+        Jsonl,
+        Schema::Generic,
+    ),
+    // OpenClaw: per-agent transcripts and the per-agent SQLite store. The
+    // credentials and gateway databases are deliberately left alone.
+    loc(
+        "openclaw",
+        OpenclawState,
+        "agents/*/sessions/*.jsonl",
+        Jsonl,
+        Schema::OmpSession,
+    ),
+    loc(
+        "openclaw",
+        OpenclawState,
+        "agents/*/agent/openclaw-agent.sqlite",
+        Sqlite,
+        Schema::Generic,
+    ),
+    // Factory Droid.
+    loc("droid", FactoryHome, "sessions/*/*.jsonl", Jsonl, Schema::DroidSession),
+    // pi (badlogic/pi-mono), the agent omp was forked from.
+    loc("pi", PiAgent, "sessions/**/*.jsonl", Jsonl, Schema::OmpSession),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -360,6 +481,59 @@ impl Env {
                     }
                 }
             }
+            ClaudeHome => {
+                v.push(self.home.join(".claude"));
+                if !self.rooted
+                    && let Some(p) = env_path("CLAUDE_CONFIG_DIR")
+                {
+                    v.push(p);
+                }
+            }
+            CodexHome => {
+                v.push(self.home.join(".codex"));
+                if !self.rooted
+                    && let Some(p) = env_path("CODEX_HOME")
+                {
+                    v.push(p);
+                }
+            }
+            GeminiHome => {
+                v.push(self.home.join(".gemini"));
+                if !self.rooted
+                    && let Some(p) = env_path("GEMINI_CLI_HOME")
+                {
+                    v.push(p.join(".gemini"));
+                }
+            }
+            HermesHome => {
+                v.push(self.home.join(".hermes"));
+                if self.rooted || current_os() == Os::Windows {
+                    v.push(self.home.join("AppData").join("Local").join("hermes"));
+                }
+                if !self.rooted {
+                    if let Some(p) = env_path("HERMES_HOME") {
+                        v.push(p);
+                    }
+                    if current_os() == Os::Windows
+                        && let Some(p) = env_path("LOCALAPPDATA")
+                    {
+                        v.push(p.join("hermes"));
+                    }
+                }
+            }
+            OpenclawState => {
+                // Older releases were named clawdbot and moltbot.
+                for n in [".openclaw", ".clawdbot", ".moltbot"] {
+                    v.push(self.home.join(n));
+                }
+                if !self.rooted
+                    && let Some(p) = env_path("OPENCLAW_STATE_DIR")
+                {
+                    v.push(p);
+                }
+            }
+            FactoryHome => v.push(self.home.join(".factory")),
+            PiAgent => v.push(self.home.join(".pi").join("agent")),
         }
         v
     }
@@ -387,6 +561,7 @@ fn sniff_format(p: &Path) -> Format {
     match ext.as_str() {
         "jsonl" | "ndjson" => Format::Jsonl,
         "json" => Format::Json,
+        "zst" if p.to_string_lossy().to_ascii_lowercase().ends_with(".jsonl.zst") => Format::JsonlZst,
         _ => {
             if is_sqlite(p) {
                 Format::Sqlite
@@ -413,7 +588,7 @@ fn is_binary(p: &Path) -> bool {
 }
 
 const ALSO_EXTS: &[&str] = &[
-    "json", "jsonl", "ndjson", "md", "txt", "log", "yaml", "yml", "db", "sqlite", "sqlite3", "vscdb",
+    "json", "jsonl", "ndjson", "md", "txt", "log", "yaml", "yml", "db", "sqlite", "sqlite3", "vscdb", "zst",
 ];
 
 pub struct Discovered {

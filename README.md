@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/bilawalriaz/sesscrub/actions/workflows/ci.yml/badge.svg)](https://github.com/bilawalriaz/sesscrub/actions/workflows/ci.yml)
 
-sesscrub finds the session data that AI coding agents keep on disk: GitHub Copilot (VS Code chat history and Copilot CLI), OpenCode and omp (oh-my-pi). It copies every file it is about to change into an encrypted backup, redacts secrets and personal data in place, and prints a report. `sesscrub restore` puts the files back from a backup.
+sesscrub finds the session data that AI coding agents keep on disk: Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot (VS Code chat history and Copilot CLI), OpenCode, Hermes Agent, OpenClaw, Factory Droid, pi and omp (oh-my-pi). It copies every file it is about to change into an encrypted backup, redacts secrets and personal data in place, and prints a report. `sesscrub restore` puts the files back from a backup.
 
 It is a single binary for Windows, macOS and Linux. It makes no network calls, apart from the optional one-time download of the NER model.
 
@@ -22,7 +22,17 @@ Close your agents before running `clean`. Files modified in the last 120 seconds
 
 ### Prebuilt binaries
 
-Download a binary from the GitHub Releases page. Builds are published for Linux x86_64, macOS arm64, macOS x86_64 and Windows x86_64, with a `SHA256SUMS.txt` file to check the download against.
+Download a binary from the [latest release](https://github.com/bilawalriaz/sesscrub/releases/latest). Builds are published for Linux x86_64, macOS arm64, macOS x86_64 and Windows x86_64, with a `SHA256SUMS.txt` file to check the download against.
+
+With the GitHub CLI (macOS arm64 shown; swap the target for your platform):
+
+```sh
+gh release download --repo bilawalriaz/sesscrub --pattern '*aarch64-apple-darwin.tar.gz' --pattern SHA256SUMS.txt
+shasum -a 256 --ignore-missing -c SHA256SUMS.txt
+tar -xzf sesscrub-*-aarch64-apple-darwin.tar.gz sesscrub && sudo mv sesscrub /usr/local/bin/
+```
+
+Targets: `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` (a `.zip`).
 
 ### Build from source
 
@@ -61,7 +71,7 @@ Flags for `scan` and `clean`:
 
 | Flag | Effect |
 |---|---|
-| `--only copilot,opencode,omp` | Only the listed tools. |
+| `--only claude,codex,...` | Only the listed tools: `copilot`, `opencode`, `omp`, `claude`, `codex`, `gemini`, `hermes`, `openclaw`, `droid`, `pi`. |
 | `--root DIR` | Look for session data under DIR instead of your home directory. Use it to test on a copy. |
 | `--also PATH` | Also scan a file or directory. Repeatable. |
 | `--ner` / `--no-ner` | Turn the NER model on or off for this run. |
@@ -120,6 +130,15 @@ The tables below show where sesscrub looks. Exact globs are in `src/discovery.rs
 | Copilot CLI | `~/.copilot`, `$COPILOT_HOME`, or `$XDG_STATE_HOME/.copilot` | `session-state` (events, plans, workspace files, checkpoints) and `history-session-state` |
 | OpenCode | `~/.local/share/opencode` on every OS, or `$XDG_DATA_HOME/opencode`, or the file in `$OPENCODE_DB` | `opencode*.db` (SQLite) and the older `storage/**/*.json` tree |
 | omp (oh-my-pi) | `~/.omp/agent`, `$PI_CODING_AGENT_DIR`, `$XDG_DATA_HOME/omp`, and named profiles under `~/.omp` | `sessions/**/*.jsonl` |
+| Claude Code | `~/.claude` or `$CLAUDE_CONFIG_DIR` | `projects/*/*.jsonl` transcripts and subagent transcripts, `tool-results/`, project `memory/*.md`, `history.jsonl`, `plans/`, `todos/`, `paste-cache/`, and `file-history/` (rewind snapshots of edited files) |
+| Codex CLI | `~/.codex` or `$CODEX_HOME` | `sessions/**/rollout-*.jsonl`, `archived_sessions/` (plain and zstd-compressed `.jsonl.zst`), `history.jsonl`, `session_index.jsonl`, and the `state_*`, `thread_history_*` and `memories_*` SQLite databases |
+| Gemini CLI | `~/.gemini` (or `$GEMINI_CLI_HOME/.gemini`) | `tmp/<project hash>/chats/*.json`, `logs.json` and checkpoints |
+| Hermes Agent | `~/.hermes`, `$HERMES_HOME`, or `%LOCALAPPDATA%\hermes` on Windows | `state.db` (SQLite) and `sessions/*.json(l)`, for the default profile and every `profiles/<name>/` |
+| OpenClaw | `~/.openclaw`, `$OPENCLAW_STATE_DIR`, legacy `~/.clawdbot` and `~/.moltbot` | `agents/*/sessions/*.jsonl` and `agents/*/agent/openclaw-agent.sqlite`. Credential and gateway databases are not touched. |
+| Factory Droid | `~/.factory` | `sessions/*/*.jsonl` |
+| pi | `~/.pi/agent` | `sessions/**/*.jsonl` |
+
+Credential files (`auth.json`, OAuth tokens, keychains, `.env` in the agent's home) are never in these globs, so cleaning cannot log you out of an agent.
 
 The user data directory is `~/Library/Application Support` on macOS, `~/.config` (or `$XDG_CONFIG_HOME`) on Linux, and `%APPDATA%` on Windows. VS Code's `VSCODE_PORTABLE` and `VSCODE_APPDATA` are honoured.
 
@@ -182,9 +201,12 @@ sesscrub works without a config file. To change the defaults, such as the tools 
 - JSON keys are not redacted.
 - SQLite full-text index tables are skipped, and the report notes it.
 - In VS Code's `state.vscdb`, only chat-related rows are touched.
+- Zstd-compressed Codex rollouts are rewritten at compression level 3, so a cleaned `.jsonl.zst` is not byte-identical to one Codex would write. `restore` puts the original bytes back.
 - Formats were researched on 2026-11-09. When a file does not match the expected layout, sesscrub falls back to generic handling and lists the file under "format drift" in the report.
 
 ## Development
+
+See [AGENTS.md](AGENTS.md) for the layout, how to add a new agent, and how releases work.
 
 `cargo test --workspace` runs the unit tests and the end-to-end tests. The end-to-end tests build fixture trees with the `crates/fixturegen` crate. They check recall for each type, confirm that no planted value remains in raw bytes (including SQLite and WAL files), validate all output, confirm that clean followed by restore is byte-identical, and cover password sources, a wrong password, insecure password files, active and locked files, and format drift.
 

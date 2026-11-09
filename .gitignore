@@ -3,7 +3,6 @@
 .env.example
 .DS_Store
 *.partial
-/bench-data/
 *.tar.zst.age
 *.after.age
 report-*.json
