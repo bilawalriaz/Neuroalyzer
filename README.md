@@ -50,6 +50,10 @@ tar -xzf neuroalyzer-*-x86_64-unknown-linux-gnu.tar.gz neuroalyzer && sudo mv ne
 
 Targets: `x86_64-unknown-linux-gnu` (`.tar.gz`, `.deb`, `.rpm`), `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` (a `.zip`).
 
+### Upgrading from sesscrub
+
+2.0.0 renames the project. The binary is now `neuroalyzer`, and the config file and data directory moved to `~/.config/neuroalyzer` and `~/.local/share/neuroalyzer` (`~/Library/Application Support/neuroalyzer` on macOS, `%LOCALAPPDATA%\neuroalyzer` on Windows). Backups made by `sesscrub` keep their old names and old data directory, so the new binary does not list or restore them. Keep the old binary until you no longer need those backups.
+
 ### Build from source
 
 You need Rust 1.89 or newer. Run `rustup update` if your version is older.
