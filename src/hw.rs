@@ -205,14 +205,19 @@ mod imp {
         let mut off = 0usize;
         while off + 8 <= buf.len() {
             // SAFETY: entries are laid out back to back, each starting with
-            // its own Size; we only read within `buf`.
-            let e = unsafe { &*(buf.as_ptr().add(off) as *const SYSTEM_CPU_SET_INFORMATION) };
+            // its own Size; the bounds check above keeps the read inside
+            // `buf`, and read_unaligned makes no alignment assumption.
+            if off + std::mem::size_of::<SYSTEM_CPU_SET_INFORMATION>() > buf.len() {
+                break;
+            }
+            let e: SYSTEM_CPU_SET_INFORMATION = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(off).cast()) };
             if e.Size == 0 {
                 break;
             }
             if e.Type == 0 {
                 // CpuSetInformation
-                let cs = unsafe { &e.Anonymous.CpuSet };
+                // SAFETY: Type 0 (CpuSetInformation) means the CpuSet variant.
+                let cs = unsafe { e.Anonymous.CpuSet };
                 classes
                     .entry(cs.EfficiencyClass)
                     .or_default()

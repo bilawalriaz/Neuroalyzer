@@ -56,7 +56,7 @@ struct Common {
     /// Print the report as JSON on stdout instead of writing report files.
     #[arg(long)]
     json: bool,
-    /// Parallel NER workers. Default: one per performance core.
+    /// Parallel NER workers. Default: one per physical core.
     #[arg(long, value_name = "N")]
     ner_sessions: Option<usize>,
     /// Threads per NER worker. Default: 1.
@@ -221,10 +221,21 @@ fn setup_threads(cli: &Cli, cfg: &Config) -> anyhow::Result<()> {
     if low {
         neuroalyzer::hw::lower_priority();
     }
-    let budget = pick(cli.threads.clone(), "THREADS", cfg.defaults.threads.clone())?
-        .map(|s| s.parse::<Budget>().map_err(|e| anyhow::anyhow!("--threads: {e}")))
-        .transpose()?
-        .unwrap_or(Budget::Auto);
+    let budget = pick::<Budget>(
+        cli.threads
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("--threads: {e}"))?,
+        "THREADS",
+        cfg.defaults
+            .threads
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("config defaults.threads: {e}"))?,
+    )?
+    .unwrap_or(Budget::Auto);
     let cores = neuroalyzer::hw::detect();
     let n = budget.threads(&cores);
     // Ignore "already built": tests and library users may have set it up.

@@ -4,7 +4,7 @@ exclude = ["vendor"]
 
 [package]
 name = "neuroalyzer"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 license = "MIT"
 description = "Scrub secrets and PII from local AI coding agent session data"
@@ -61,7 +61,7 @@ ureq = { version = "3.5.1", optional = true }
 libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 regex-syntax = "0.8"

@@ -94,6 +94,8 @@ def main():
         args.append("--no-ner" if a.one == "no-ner" else "--ner")
         wall, cpu, rss, rep, err = run(binary, args, env)
         e = rep.get("engines", {})
+        if a.one != "no-ner" and not e.get("ner"):
+            sys.exit(f"NER didn't run in mode {a.one}: {e.get('ner_note')}. Set {prefix}_MODEL_DIR to a folder with the model.")
         res = {
             "version": version, "label": a.label, "mode": a.one, "root": str(root), "host": platform.node(),
             "machine": platform.machine(), "wall_s": round(wall, 2), "cpu_s": round(cpu, 1),

@@ -96,6 +96,20 @@ Flags for `scan` and `clean`:
 | `--also PATH` | Also scan a file or directory. Repeatable. |
 | `--ner` / `--no-ner` | Turn the NER model on or off for this run. |
 | `--json` | Print the report as JSON on stdout instead of writing report files. |
+| `--ner-sessions N` | Parallel NER workers. Default: one per physical core. |
+| `--ner-threads N` | Threads per NER worker. Default: 1. |
+| `--ner-batch N` | Chunks per NER model call. Default: 1. |
+| `--ner-device DEVICE` | `auto`, `cpu`, `coreml`, `cuda` or `directml`. The last three need a build with the cargo feature of the same name. Default: `auto` (CPU in standard builds). |
+
+Flags for every command:
+
+| Flag | Effect |
+|---|---|
+| `-j N`, `--threads N` | CPU threads for scanning: a number, `max`, `half` or `p-cores`. Default: every logical CPU. |
+| `--low-priority` | Run at low priority so the machine stays usable: background QoS on macOS (efficiency cores, throttled I/O), nice 10 on Linux, below-normal priority on Windows. |
+| `-v` | With NER on, also prints the CPU layout and the plan it chose: scan threads, NER workers, threads, batch and device. |
+
+Each of these has an environment variable and a config key. See [docs/CONFIG.md](docs/CONFIG.md).
 
 Extra flags for `clean`:
 
@@ -239,7 +253,11 @@ NEUROALYZER_TEST_MODEL_DIR=/some/dir cargo test --release --test ner
 
 ## Speed
 
-Without NER, scanning is limited mostly by disk reads. NER runs a transformer model on every unique chunk of prose, so it is far slower, and its speed depends on how much distinct prose your sessions hold. To see the real numbers for your data, time `neuroalyzer scan --root` on a copy (see "Testing on a copy"). The report prints elapsed time and MB/s.
+Without NER, scanning spreads over every core, with the biggest files started first, and the PII patterns stay on the fast regex engine even for non-ASCII text. On an M3 Pro, `scan --no-ner` reads 6.1 GB of real agent sessions in about 39 seconds (151 MB/s).
+
+NER is experimental and far slower. It runs a transformer on every unique chunk of prose, once per run: all files are read first, chunks are deduplicated across the whole corpus, and the unique ones go to a pool of model workers (one per physical core by default). The same M3 Pro does about 60 chunks per second, so a large first run takes hours. `-v` prints how many unique chunks a run has to infer. Use `--no-ner` for fast runs, and `--low-priority` for a long NER run in the background. [docs/NER_PERFORMANCE.md](docs/NER_PERFORMANCE.md) has the measurements and what is left to speed up.
+
+To see the numbers for your own data, time `neuroalyzer scan --root` on a copy (see "Testing on a copy"), or run `bench/bench.py`, which also records CPU use, peak memory and NER chunk rates.
 
 ## Licence
 
