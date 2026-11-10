@@ -39,20 +39,36 @@ pub fn config_file() -> PathBuf {
         .join("config.toml")
 }
 
-pub fn archives_dir() -> PathBuf {
-    data_dir().join("archives")
+fn portable_dir() -> Result<Option<PathBuf>> {
+    #[cfg(windows)]
+    if std::env::var_os("NEURALYZER_DATA_DIR").is_none() {
+        let exe = std::env::current_exe().context("couldn't locate the executable for output")?;
+        return exe
+            .parent()
+            .map(|dir| Some(dir.to_path_buf()))
+            .context("the executable has no parent directory");
+    }
+    Ok(None)
+}
+
+pub fn archives_dir() -> Result<PathBuf> {
+    Ok(portable_dir()?.unwrap_or_else(|| data_dir().join("archives")))
+}
+
+pub fn legacy_archives_dir() -> Result<Option<PathBuf>> {
+    Ok(portable_dir()?.map(|_| data_dir().join("archives")))
 }
 
 pub fn reports_dir() -> Result<PathBuf> {
-    #[cfg(windows)]
-    if std::env::var_os("NEURALYZER_DATA_DIR").is_none() {
-        let exe = std::env::current_exe().context("couldn't locate the executable for report output")?;
-        return exe
-            .parent()
-            .map(Path::to_path_buf)
-            .context("the executable has no parent directory");
-    }
-    Ok(data_dir().join("reports"))
+    Ok(portable_dir()?.unwrap_or_else(|| data_dir().join("reports")))
+}
+
+/// Serialize archive creation and retention when different Windows profiles
+/// share the same executable directory.
+pub fn lock_portable_archives() -> Result<Option<RunLock>> {
+    portable_dir()?
+        .map(|dir| lock_file(&dir.join("neuralyzer-archives.lock")))
+        .transpose()
 }
 
 /// `NEURALYZER_MODEL_DIR` overrides where the NER model lives (shared caches, tests).
@@ -97,12 +113,15 @@ pub struct RunLock {
 pub fn lock_data_dir() -> Result<RunLock> {
     let d = data_dir();
     ensure_private_dir(&d)?;
-    let p = d.join("neuralyzer.lock");
+    lock_file(&d.join("neuralyzer.lock"))
+}
+
+fn lock_file(p: &Path) -> Result<RunLock> {
     let f = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(&p)
+        .open(p)
         .with_context(|| format!("couldn't open {}", p.display()))?;
     match f.try_lock() {
         Ok(()) => Ok(RunLock { _f: f }),
