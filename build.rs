@@ -3,9 +3,9 @@ fn main() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=assets/neuralyzer.rc");
+    println!("cargo:rerun-if-changed=neuralyzer.rc");
     println!("cargo:rerun-if-changed=assets/neuralyzer.ico");
-    embed_resource::compile_for("assets/neuralyzer.rc", ["neuralyzer"], embed_resource::NONE)
+    embed_resource::compile_for("neuralyzer.rc", ["neuralyzer"], embed_resource::NONE)
         .manifest_required()
         .expect("embed the Neuralyzer executable icon");
 }
