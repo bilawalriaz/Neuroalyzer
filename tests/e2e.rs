@@ -589,3 +589,37 @@ fn thread_budget_ignores_invalid_lower_priority_values() {
         assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     }
 }
+
+#[cfg(feature = "ner")]
+#[test]
+fn ner_requires_explicit_opt_in() {
+    let fx = fixture();
+    let config = fx.dir.path().join("ner.toml");
+    std::fs::write(&config, "[defaults]\nner = true\n").unwrap();
+
+    for (options, attempts_ner) in [
+        (vec![], false),
+        (vec!["--ner"], true),
+        (vec!["--config", config.to_str().unwrap()], true),
+        (vec!["--config", config.to_str().unwrap(), "--no-ner"], false),
+    ] {
+        let output = fx
+            .cmd()
+            .args(["scan", "--json", "--root", &fx.root_s()])
+            .args(&options)
+            .env("NEURALYZER_MODEL_DIR", fx.dir.path().join("missing-model"))
+            .env("NEURALYZER_NO_DOWNLOAD", "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            report["engines"]["ner_note"]
+                .as_str()
+                .is_some_and(|note| note.contains("model isn't downloaded")),
+            attempts_ner,
+            "{options:?}: {}",
+            report["engines"]
+        );
+    }
+}

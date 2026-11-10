@@ -47,7 +47,7 @@ struct Common {
     /// Also scan this file or directory (repeatable).
     #[arg(long, value_name = "PATH")]
     also: Vec<PathBuf>,
-    /// Find names, addresses and organisations with the NER model.
+    /// Enable experimental NER for names, addresses and organisations.
     #[arg(long, overrides_with = "no_ner")]
     ner: bool,
     /// Don't use the NER model.
@@ -149,7 +149,7 @@ fn ner_default(c: &Common, cfg: &Config) -> bool {
     } else if c.ner {
         true
     } else {
-        cfg.defaults.ner.unwrap_or(cfg!(feature = "ner"))
+        cfg.defaults.ner.unwrap_or(false)
     }
 }
 

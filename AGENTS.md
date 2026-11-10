@@ -31,7 +31,7 @@ To compare with a dev build: `cargo build --release` gives `target/release/neura
 
 ```sh
 neuralyzer list                         # what exists, per tool
-neuralyzer scan --no-ner                # read-only report, exit 1 if anything found
+neuralyzer scan                         # read-only report, exit 1 if anything found
 neuralyzer scan --only claude,codex     # limit to some tools
 neuralyzer clean                        # backup (asks for a password) -> redact
 neuralyzer restore                      # list backups; restore <NAME> to undo
@@ -41,7 +41,7 @@ neuralyzer restore                      # list backups; restore <NAME> to undo
 - Try it on a copy: `cp -Rp` the agent dirs into `~/scrub-test`, then pass `--root ~/scrub-test` to every command. `-p` keeps mtimes, or pass `--min-age 0`.
 - For automation: `--json`, `-y`, `--password-file FILE` (mode 0600) or `--password-stdin`. A non-interactive `restore` needs the archive name. It is printed by `clean` and is `archive` in `clean --json`.
 - `NEURALYZER_DATA_DIR` moves backups, reports, the model and `hmac.key`. Set `NEURALYZER_NO_KEYRING=1` in CI and on headless machines.
-- NER (names, addresses, orgs) downloads a 205 MB model on first use. Pass `--no-ner` for fast runs, or run `neuralyzer model fetch` once.
+- NER is off by default. Pass `--ner` to find names, addresses and organisations. The first NER run downloads a 205 MB model. To download it ahead of time, run `neuralyzer model fetch`.
 
 ## Developing
 
