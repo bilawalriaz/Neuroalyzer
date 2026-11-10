@@ -228,14 +228,19 @@ fn setup_threads(cli: &Cli, cfg: &Config) -> anyhow::Result<()> {
             .transpose()
             .map_err(|e| anyhow::anyhow!("--threads: {e}"))?,
         "THREADS",
-        cfg.defaults
+        None,
+    )?;
+    let budget = match budget {
+        Some(budget) => budget,
+        None => cfg
+            .defaults
             .threads
             .as_deref()
             .map(str::parse)
             .transpose()
-            .map_err(|e| anyhow::anyhow!("config defaults.threads: {e}"))?,
-    )?
-    .unwrap_or(Budget::Auto);
+            .map_err(|e| anyhow::anyhow!("config defaults.threads: {e}"))?
+            .unwrap_or(Budget::Auto),
+    };
     let cores = neuralyzer::hw::detect();
     let n = budget.threads(&cores);
     // Ignore "already built": tests and library users may have set it up.

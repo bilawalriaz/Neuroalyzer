@@ -80,7 +80,7 @@ def main():
     ap.add_argument("--label", default="")
     ap.add_argument("--one", help=argparse.SUPPRESS)
     ap.add_argument("extra", nargs="*")
-    a = ap.parse_args()
+    a = ap.parse_intermixed_args()
     binary = str(pathlib.Path(a.binary).resolve())
     prefix, version = pkg_env_prefix(binary)
     root = pathlib.Path(a.root).resolve() if a.root else corpus(a.bytes)

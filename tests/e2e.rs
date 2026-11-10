@@ -569,3 +569,23 @@ fn restore_skips_locked_files() {
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     restore_is_lossless(&before, &fx.snapshot());
 }
+
+#[test]
+fn thread_budget_ignores_invalid_lower_priority_values() {
+    let fx = fixture();
+    let config = fx.dir.path().join("threads.toml");
+    std::fs::write(&config, "[defaults]\nthreads = \"invalid\"\n").unwrap();
+
+    for (flag, env) in [(Some("1"), "invalid"), (None, "2")] {
+        let mut command = fx.cmd();
+        command.arg("--config").arg(&config).env("NEURALYZER_THREADS", env);
+        if let Some(threads) = flag {
+            command.args(["--threads", threads]);
+        }
+        let output = command
+            .args(["scan", "--no-ner", "--json", "--root", &fx.root_s()])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    }
+}
