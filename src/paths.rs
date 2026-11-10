@@ -1,7 +1,7 @@
 //! Where neuralyzer keeps its own files.
 //!
-//! `NEURALYZER_DATA_DIR` overrides the data dir (archives, reports, model, HMAC
-//! key). Tests use it to stay out of the real profile.
+//! `NEURALYZER_DATA_DIR` overrides the data dir and places reports under it.
+//! Tests use it to stay out of the real profile.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -43,8 +43,16 @@ pub fn archives_dir() -> PathBuf {
     data_dir().join("archives")
 }
 
-pub fn reports_dir() -> PathBuf {
-    data_dir().join("reports")
+pub fn reports_dir() -> Result<PathBuf> {
+    #[cfg(windows)]
+    if std::env::var_os("NEURALYZER_DATA_DIR").is_none() {
+        let exe = std::env::current_exe().context("couldn't locate the executable for report output")?;
+        return exe
+            .parent()
+            .map(Path::to_path_buf)
+            .context("the executable has no parent directory");
+    }
+    Ok(data_dir().join("reports"))
 }
 
 /// `NEURALYZER_MODEL_DIR` overrides where the NER model lives (shared caches, tests).

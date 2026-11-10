@@ -104,7 +104,7 @@ Each section is optional, and so is every key within it. Where a flag, a variabl
 | Variable | Effect |
 |---|---|
 | `NEURALYZER_CONFIG` | Config file to use instead of the default path. |
-| `NEURALYZER_DATA_DIR` | Data directory for backups, reports, the model and `hmac.key`. |
+| `NEURALYZER_DATA_DIR` | Data directory for backups, the model and `hmac.key`. When set, reports go into its `reports/` subdirectory. By default, Windows writes reports beside the executable. |
 | `NEURALYZER_MODEL_DIR` | Directory for the NER model. |
 | `NEURALYZER_NO_DOWNLOAD` | Never download the NER model. |
 | `NEURALYZER_THREADS` | Scan threads, like `-j`. |

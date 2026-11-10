@@ -623,3 +623,35 @@ fn ner_requires_explicit_opt_in() {
         );
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_reports_follow_the_executable() {
+    let fx = fixture();
+    let bin_dir = fx.dir.path().join("bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let exe = bin_dir.join("neuralyzer.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_neuralyzer"), &exe).unwrap();
+
+    let mut command = std::process::Command::new(&exe);
+    command
+        .current_dir(fx.dir.path())
+        .env_remove("NEURALYZER_DATA_DIR")
+        .env("NEURALYZER_CONFIG", fx.dir.path().join("no-config.toml"))
+        .args(["scan", "--no-ner", "--root"])
+        .arg(&fx.root);
+    let output = command.output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let files = walkdir(&bin_dir);
+    for extension in ["json", "md"] {
+        assert!(
+            files
+                .iter()
+                .any(|path| path.extension().is_some_and(|ext| ext == extension))
+        );
+    }
+
+    let output = command.env("NEURALYZER_DATA_DIR", &fx.data).output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(walkdir(&fx.data.join("reports")).len(), 2);
+}
