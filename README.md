@@ -54,18 +54,6 @@ tar -xzf neuralyzer-*-x86_64-unknown-linux-gnu.tar.gz neuralyzer && sudo mv neur
 
 Targets: `x86_64-unknown-linux-gnu` (`.tar.gz`, `.deb`, `.rpm`), `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` (a `.zip`).
 
-### Upgrading from an older name
-
-The project has been renamed twice. Each rename moves the binary, the environment variables, the config file and the data directory, and creates a fresh HMAC key, so tokens from older runs no longer match:
-
-| Version | Name | Binary | Config and data directory |
-|---|---|---|---|
-| 1.x | sesscrub | `sesscrub` | `sesscrub` |
-| 2.x | neuroalyzer | `neuroalyzer` | `neuroalyzer` |
-| 3.x | neuralyzer | `neuralyzer` | `neuralyzer` |
-
-Older backups keep their old names and stay in the old data directory, so the new binary does not list or restore them, and a password saved in the OS keychain under the old name is not found. Keep the old binary until you no longer need those backups, or point `NEURALYZER_DATA_DIR` at the old directory to restore from it.
-
 ### Build from source
 
 You need Rust 1.89 or newer. Run `rustup update` if your version is older.
