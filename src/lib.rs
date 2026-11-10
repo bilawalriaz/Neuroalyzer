@@ -1,4 +1,4 @@
-//! sesscrub: scrub secrets and PII from local AI coding agent session data.
+//! Neuroalyzer: scrub secrets and PII from local AI coding agent session data.
 
 pub mod backup;
 pub mod config;

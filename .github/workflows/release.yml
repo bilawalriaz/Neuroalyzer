@@ -18,12 +18,16 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  NFPM_VERSION: 2.48.0
+
 jobs:
   version:
     name: check version
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
       release: ${{ steps.v.outputs.release }}
     steps:
       - uses: actions/checkout@v7
@@ -46,6 +50,7 @@ jobs:
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
   build:
     name: build (${{ matrix.target }})
@@ -56,7 +61,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The Linux binary is built on 22.04 so it only needs glibc 2.35:
+          # it then runs on Ubuntu 22.04+, Fedora 36+ and their derivatives.
+          # The .deb and .rpm are built from this one binary.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -75,18 +83,38 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package (unix)
-        if: runner.os != 'Windows'
+      - name: Install nfpm (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/nfpm.tar.gz" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C /usr/local/bin nfpm
+          nfpm --version
+
+      - name: Package Linux artifacts
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: scripts/package-linux.sh "${{ needs.version.outputs.version }}"
+
+      - name: Verify on Ubuntu and Fedora (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: scripts/verify-linux.sh dist
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          archive="sesscrub-${TAG}-${TARGET}.tar.gz"
+          archive="neuroalyzer-${TAG}-${TARGET}.tar.gz"
           stage="$(mktemp -d)"
-          cp "target/${TARGET}/release/sesscrub" README.md LICENSE "$stage/"
-          tar -C "$stage" -czf "$archive" sesscrub README.md LICENSE
+          cp "target/${TARGET}/release/neuroalyzer" README.md LICENSE "$stage/"
+          tar -C "$stage" -czf "$archive" neuroalyzer README.md LICENSE
           shasum -a 256 "$archive" > "$archive.sha256"
 
       - name: Package (Windows)
@@ -97,10 +125,10 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           $ErrorActionPreference = "Stop"
-          $archive = "sesscrub-$env:TAG-$env:TARGET.zip"
+          $archive = "neuroalyzer-$env:TAG-$env:TARGET.zip"
           $stage = Join-Path $env:RUNNER_TEMP "stage-$env:TARGET"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item -Path "target\$env:TARGET\release\sesscrub.exe", "README.md", "LICENSE" -Destination $stage
+          Copy-Item -Path "target\$env:TARGET\release\neuroalyzer.exe", "README.md", "LICENSE" -Destination $stage
           Compress-Archive -Path "$stage\*" -DestinationPath $archive
           $hash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
           [System.IO.File]::WriteAllText("$archive.sha256", "$hash  $archive`n")
@@ -109,13 +137,17 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
-          path: sesscrub-${{ needs.version.outputs.tag }}-${{ matrix.target }}.*
+          path: |
+            neuroalyzer-${{ needs.version.outputs.tag }}-${{ matrix.target }}.*
+            dist/*
           if-no-files-found: error
 
   release:
     name: release
     needs: [version, build]
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -129,11 +161,39 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.tag }}
-          name: sesscrub ${{ needs.version.outputs.tag }}
+          name: Neuroalyzer ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           make_latest: true
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
+            dist/*.rpm
             dist/SHA256SUMS.txt
+
+  verify:
+    name: verify published assets
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download the published Linux assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for attempt in 1 2 3 4 5; do
+            if gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+              --pattern '*x86_64-unknown-linux-gnu.tar.gz' \
+              --pattern '*.deb' --pattern '*.rpm' --dir dist; then
+              break
+            fi
+            echo "release assets not ready yet (attempt ${attempt}); retrying"
+            sleep 10
+          done
+          ls -l dist
+      - name: Run the published packages on Ubuntu and Fedora
+        run: scripts/verify-linux.sh dist

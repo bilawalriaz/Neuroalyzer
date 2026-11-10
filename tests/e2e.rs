@@ -205,9 +205,14 @@ fn password_sources() {
         "--json",
     ];
     // Env var.
-    let o = fx.cmd().args(base).env("SESSCRUB_PASSWORD", PASSWORD).output().unwrap();
+    let o = fx
+        .cmd()
+        .args(base)
+        .env("NEUROALYZER_PASSWORD", PASSWORD)
+        .output()
+        .unwrap();
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    assert!(stderr(&o).contains("SESSCRUB_PASSWORD"), "expected env warning");
+    assert!(stderr(&o).contains("NEUROALYZER_PASSWORD"), "expected env warning");
     let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     let archive = rep["archive"].as_str().unwrap().to_string();
     // Stdin.
@@ -435,7 +440,7 @@ fn interrupted_clean_is_restorable_without_force() {
     let o = fx
         .cmd()
         .args(clean_args(&fx))
-        .env("SESSCRUB_TEST_FAULT", "after-redact")
+        .env("NEUROALYZER_TEST_FAULT", "after-redact")
         .output()
         .unwrap();
     assert_eq!(o.status.code(), Some(3), "{}", stderr(&o));
@@ -475,7 +480,7 @@ fn vacuum_failure_after_commit_is_reported_as_modified() {
     let o = fx
         .cmd()
         .args(&args)
-        .env("SESSCRUB_TEST_FAULT", "vacuum")
+        .env("NEUROALYZER_TEST_FAULT", "vacuum")
         .output()
         .unwrap();
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
@@ -509,13 +514,13 @@ fn concurrent_runs_are_refused() {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(fx.data.join("sesscrub.lock"))
+        .open(fx.data.join("neuroalyzer.lock"))
         .unwrap();
     held.lock().unwrap();
     let before = fx.snapshot();
     let o = fx.cmd().args(clean_args(&fx)).output().unwrap();
     assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
-    assert!(stderr(&o).contains("another sesscrub"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("another neuroalyzer"), "{}", stderr(&o));
     assert!(diff_snap(&before, &fx.snapshot()).is_empty());
     held.unlock().unwrap();
     let o = fx.cmd().args(clean_args(&fx)).output().unwrap();
@@ -525,7 +530,7 @@ fn concurrent_runs_are_refused() {
     held.lock().unwrap();
     let o = fx.run(&["restore", &archive, "--password-file", &fx.pw_s()]);
     assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
-    assert!(stderr(&o).contains("another sesscrub"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("another neuroalyzer"), "{}", stderr(&o));
 }
 
 /// Regression: restore replaced files that another process held locked.

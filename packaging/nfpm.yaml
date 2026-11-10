@@ -1,0 +1,43 @@
+# Linux packages (.deb for Ubuntu/Debian, .rpm for Fedora/RHEL).
+#
+# The binary is built on Ubuntu 22.04 (glibc 2.35) so the same package runs on
+# every supported distribution; see .github/workflows/release.yml.
+name: neuroalyzer
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Bilawal Riaz <inbox@bilawal.net>
+description: |-
+  Scrub secrets and PII from local AI coding agent session data.
+  Neuroalyzer finds the session data kept by Claude Code, OpenAI Codex CLI,
+  Gemini CLI, GitHub Copilot, OpenCode, Hermes Agent, OpenClaw, Factory Droid,
+  pi and omp. It backs up every file it changes into an encrypted archive,
+  redacts secrets and personal data in place, and prints a report.
+vendor: Bilawal Riaz
+homepage: https://github.com/bilawalriaz/neuroalyzer
+license: MIT
+contents:
+  - src: dist/stage/neuroalyzer
+    dst: /usr/bin/neuroalyzer
+    file_info:
+      mode: 0755
+  - src: dist/stage/README.md
+    dst: /usr/share/doc/neuroalyzer/README.md
+  - src: dist/stage/LICENSE
+    dst: /usr/share/doc/neuroalyzer/LICENSE
+  - src: dist/stage/docs
+    dst: /usr/share/doc/neuroalyzer/docs
+    type: tree
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.35)
+      - libstdc++6
+      - libgcc-s1
+  rpm:
+    depends:
+      - glibc >= 2.35
+      - libstdc++
+      - libgcc

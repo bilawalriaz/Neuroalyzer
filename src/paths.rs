@@ -1,27 +1,27 @@
-//! Where sesscrub keeps its own files.
+//! Where neuroalyzer keeps its own files.
 //!
-//! `SESSCRUB_DATA_DIR` overrides the data dir (archives, reports, model, HMAC
+//! `NEUROALYZER_DATA_DIR` overrides the data dir (archives, reports, model, HMAC
 //! key). Tests use it to stay out of the real profile.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub fn data_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("SESSCRUB_DATA_DIR") {
+    if let Some(p) = std::env::var_os("NEUROALYZER_DATA_DIR") {
         return PathBuf::from(p);
     }
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("sesscrub")
+        .join("neuroalyzer")
 }
 
 pub fn config_file() -> PathBuf {
-    if let Some(p) = std::env::var_os("SESSCRUB_CONFIG") {
+    if let Some(p) = std::env::var_os("NEUROALYZER_CONFIG") {
         return PathBuf::from(p);
     }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("sesscrub")
+        .join("neuroalyzer")
         .join("config.toml")
 }
 
@@ -33,9 +33,9 @@ pub fn reports_dir() -> PathBuf {
     data_dir().join("reports")
 }
 
-/// `SESSCRUB_MODEL_DIR` overrides where the NER model lives (shared caches, tests).
+/// `NEUROALYZER_MODEL_DIR` overrides where the NER model lives (shared caches, tests).
 pub fn models_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("SESSCRUB_MODEL_DIR") {
+    if let Some(p) = std::env::var_os("NEUROALYZER_MODEL_DIR") {
         return PathBuf::from(p);
     }
     data_dir().join("models")
@@ -76,7 +76,7 @@ pub struct RunLock {
 pub fn lock_data_dir() -> Result<RunLock> {
     let d = data_dir();
     ensure_private_dir(&d)?;
-    let p = d.join("sesscrub.lock");
+    let p = d.join("neuroalyzer.lock");
     let f = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -86,7 +86,7 @@ pub fn lock_data_dir() -> Result<RunLock> {
     match f.try_lock() {
         Ok(()) => Ok(RunLock { _f: f }),
         Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
-            "another sesscrub clean or restore is running (it holds {}). Wait for it to finish, then try again.",
+            "another neuroalyzer clean or restore is running (it holds {}). Wait for it to finish, then try again.",
             p.display()
         ),
         Err(std::fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("couldn't lock {}", p.display())),

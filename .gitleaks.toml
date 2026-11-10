@@ -1,4 +1,4 @@
-title = "sesscrub gitleaks config"
+title = "Neuroalyzer gitleaks config"
 
 [extend]
 useDefault = true

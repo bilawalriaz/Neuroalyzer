@@ -66,11 +66,11 @@ pub fn fixture() -> Fixture {
 
 impl Fixture {
     pub fn cmd(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_sesscrub"));
-        c.env("SESSCRUB_DATA_DIR", &self.data)
-            .env("SESSCRUB_CONFIG", self.dir.path().join("no-config.toml"))
-            .env("SESSCRUB_NO_KEYRING", "1")
-            .env_remove("SESSCRUB_PASSWORD")
+        let mut c = Command::new(env!("CARGO_BIN_EXE_neuroalyzer"));
+        c.env("NEUROALYZER_DATA_DIR", &self.data)
+            .env("NEUROALYZER_CONFIG", self.dir.path().join("no-config.toml"))
+            .env("NEUROALYZER_NO_KEYRING", "1")
+            .env_remove("NEUROALYZER_PASSWORD")
             .env("NO_COLOR", "1")
             .stdin(Stdio::null());
         c

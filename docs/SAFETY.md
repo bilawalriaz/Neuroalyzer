@@ -6,13 +6,13 @@ This page describes what `clean` and `restore` do, in order, and what each step 
 
 `clean` runs these steps in order. If a step fails, the run stops before the next one. The states and invariants behind them are in [STATE_MACHINES.md](STATE_MACHINES.md).
 
-0. Take the run lock (`sesscrub.lock` in the data directory). If another `clean` or `restore` holds it, stop with a message. The lock is released when the process exits, even on a crash.
+0. Take the run lock (`neuroalyzer.lock` in the data directory). If another `clean` or `restore` holds it, stop with a message. The lock is released when the process exits, even on a crash.
 1. Scan the files and work out which would change. Active files and files that cannot be written are skipped here.
 2. If nothing would change, stop. No backup is written.
-3. Ask for confirmation. Skip this with `--yes`. Without a terminal and without `--yes`, sesscrub stops and asks you to re-run with `--yes`.
+3. Ask for confirmation. Skip this with `--yes`. Without a terminal and without `--yes`, Neuroalyzer stops and asks you to re-run with `--yes`.
 4. Get the backup password. See [Passwords](#passwords).
 5. Write the encrypted archive with only the files that will change, including SQLite `-wal` and `-journal` files. Re-open the archive, decrypt it and check every hash. If any check fails, the partial archive is deleted and no session file is changed.
-6. Redact each file. Just before each file is written, sesscrub checks it is not locked by another process, then reads it once and checks that those bytes match the backup hash. It redacts those same bytes, and checks the file on disk again immediately before replacing it. If the file changed at any point, it is left alone and the report says so. For SQLite the check runs inside the write transaction, so no other process can commit between the check and the redaction.
+6. Redact each file. Just before each file is written, Neuroalyzer checks it is not locked by another process, then reads it once and checks that those bytes match the backup hash. It redacts those same bytes, and checks the file on disk again immediately before replacing it. If the file changed at any point, it is left alone and the report says so. For SQLite the check runs inside the write transaction, so no other process can commit between the check and the redaction.
 7. As each file is written, its after-redaction hash is appended to a recovery journal and flushed to disk before the file is replaced.
 8. Write the after-redaction hashes to the encrypted sidecar, then delete the journal. If the run stops before this step (Ctrl-C, crash, power loss), the journal stays and `restore` uses it.
 9. Delete backups beyond the number to keep (`--keep`, default 5), and any leftover partial files from interrupted runs.
@@ -23,11 +23,11 @@ Each backup is one archive plus one sidecar.
 
 | File | Contents |
 |---|---|
-| `archives/sesscrub-<timestamp>.tar.zst.age` | The backup itself. Written once, then verified. |
-| `archives/sesscrub-<timestamp>.after.age` | Hashes of each file that clean wrote, after redaction. Written after the redaction pass. |
-| `archives/sesscrub-<timestamp>.after.journal` | Only while `clean` runs, or after it was interrupted. The same hashes, written one by one as files are replaced. It holds entry ids and hashes of redacted content, never values, and is owner-only. |
+| `archives/neuroalyzer-<timestamp>.tar.zst.age` | The backup itself. Written once, then verified. |
+| `archives/neuroalyzer-<timestamp>.after.age` | Hashes of each file that clean wrote, after redaction. Written after the redaction pass. |
+| `archives/neuroalyzer-<timestamp>.after.journal` | Only while `clean` runs, or after it was interrupted. The same hashes, written one by one as files are replaced. It holds entry ids and hashes of redacted content, never values, and is owner-only. |
 
-Two backups made in the same second get a suffix: `sesscrub-<timestamp>-1`, `-2`, and so on. The suffix counts as newer, so the newest backup is always kept.
+Two backups made in the same second get a suffix: `neuroalyzer-<timestamp>-1`, `-2`, and so on. The suffix counts as newer, so the newest backup is always kept.
 
 The archive is built in three layers. The files are packed with tar, compressed with zstd at level 3 (multithreaded), and then encrypted with age, using a passphrase protected by scrypt. Everything is streamed, so no plaintext copy is written to disk.
 
@@ -35,27 +35,27 @@ The first entry in the tar is `manifest.json`. It lists each file with its origi
 
 The after-redaction hashes cannot go in the archive, because the archive is written before redaction starts. They go in the sidecar, which is encrypted with the same password. The archive itself does not change after it is verified.
 
-The data directory holds the archives in `archives/`. The folder is owner-only (`0700` on Unix), and so are the files (`0600`). `sesscrub list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar and journal too. Archive files with names sesscrub didn't make are listed but never deleted.
+The data directory holds the archives in `archives/`. The folder is owner-only (`0700` on Unix), and so are the files (`0600`). `neuroalyzer list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar and journal too. Archive files with names Neuroalyzer didn't make are listed but never deleted.
 
 ## Passwords
 
-sesscrub uses the first source it finds, in this order:
+Neuroalyzer uses the first source it finds, in this order:
 
 | Order | Source | Notes |
 |---|---|---|
 | 1 | `--password-file PATH` | On Unix, refused if group or other users can read the file. Fix it with `chmod 600 PATH`, or pass `--insecure-password-file`. One trailing newline is stripped. |
 | 2 | `--password-stdin` | Reads the first line of stdin. |
-| 3 | `SESSCRUB_PASSWORD` | Prints a warning. Environment variables can leak into logs and child processes. |
-| 4 | OS keychain | Saved with `sesscrub key save`. Skipped when `SESSCRUB_NO_KEYRING` is set. The entry is stored under the service `sesscrub`. |
+| 3 | `NEUROALYZER_PASSWORD` | Prints a warning. Environment variables can leak into logs and child processes. |
+| 4 | OS keychain | Saved with `neuroalyzer key save`. Skipped when `NEUROALYZER_NO_KEYRING` is set. The entry is stored under the service `neuroalyzer`. |
 | 5 | Interactive prompt | Input is not echoed. `clean` asks twice, and `restore` asks once. |
 
-`sesscrub key save` takes its password from the first three sources or from the prompt. It does not read the keychain first.
+`neuroalyzer key save` takes its password from the first three sources or from the prompt. It does not read the keychain first.
 
-The password is never accepted as a plain argument and never written to a log. sesscrub clears it from memory after use. A password shorter than 12 characters produces a warning, and the run continues.
+The password is never accepted as a plain argument and never written to a log. Neuroalyzer clears it from memory after use. A password shorter than 12 characters produces a warning, and the run continues.
 
-Without a terminal and with no source set, sesscrub stops with a message that lists the options.
+Without a terminal and with no source set, Neuroalyzer stops with a message that lists the options.
 
-The archive cannot be opened without its password, and sesscrub has no recovery option. Keep the password somewhere you can find it.
+The archive cannot be opened without its password, and Neuroalyzer has no recovery option. Keep the password somewhere you can find it.
 
 ## Writing files
 
@@ -81,11 +81,11 @@ A file is skipped and marked in the report when any of these is true. The reason
 | `not writable: permission denied` | The file cannot be opened for writing. |
 | `changed after backup; left as is` | The file changed between the backup and the redaction pass. |
 
-On macOS and Linux, sesscrub can only see locks. A program that has a file open without a lock is not detected, so close the agent before you run `clean`.
+On macOS and Linux, Neuroalyzer can only see locks. A program that has a file open without a lock is not detected, so close the agent before you run `clean`.
 
 ## SQLite databases
 
-sesscrub scans every TEXT cell in a SQLite database, and every BLOB cell that decodes as UTF-8 JSON. Full-text index tables are skipped, and the report says so.
+Neuroalyzer scans every TEXT cell in a SQLite database, and every BLOB cell that decodes as UTF-8 JSON. Full-text index tables are skipped, and the report says so.
 
 The update path is:
 
@@ -111,7 +111,7 @@ The steps are:
    - If a file in the group is locked or open in another process, the group is skipped, even with `--force`. Close the app and run restore again.
    - If every file still matches its "after" hash, it has not changed since `clean`, so the group is restored without asking.
    - If `clean` never wrote the group (it was skipped because it changed after the backup), the group is skipped. `--force` overwrites it.
-   - Otherwise a file in the group changed after cleaning. In a terminal, sesscrub asks once for the group. Without a terminal the group is skipped, and with `--force` it is overwritten.
+   - Otherwise a file in the group changed after cleaning. In a terminal, Neuroalyzer asks once for the group. Without a terminal the group is skipped, and with `--force` it is overwritten.
 3. Write each restored file atomically, using the same method as `clean`. The file gets its original Unix mode and modification time.
 4. For a SQLite database, remove a stale `-shm` file. If the backup has no `-wal` or `-journal` for the database, remove the current one, because it would not match the restored file.
 
@@ -123,7 +123,7 @@ Each `scan` and `clean` writes two files to `reports/` in the data directory, `r
 
 A report holds:
 
-- The sesscrub version, the mode (`scan` or `clean`), the start time, the duration and the bytes scanned.
+- The Neuroalyzer version, the mode (`scan` or `clean`), the start time, the duration and the bytes scanned.
 - Counts of files scanned, files with findings, files modified and files skipped.
 - For each tool, each file: its path, format, size, findings grouped by type and detector with counts, any skip reason, and any format drift note.
 - The versions of the detection engines and whether NER ran.
@@ -133,7 +133,7 @@ A report never includes the values that were found. File paths are included, and
 
 ## What this does not cover
 
-sesscrub changes the files it finds. It cannot reach other copies of that data. These are outside its reach:
+Neuroalyzer changes the files it finds. It cannot reach other copies of that data. These are outside its reach:
 
 - Filesystem snapshots and backups, such as Time Machine.
 - Data remnants on an SSD.

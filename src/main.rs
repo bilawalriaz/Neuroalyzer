@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
-use sesscrub::config::Config;
-use sesscrub::password::PwArgs;
-use sesscrub::run::{self, ScanOpts};
+use neuroalyzer::config::Config;
+use neuroalyzer::password::PwArgs;
+use neuroalyzer::run::{self, ScanOpts};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -9,10 +9,10 @@ const ABOUT: &str = "Find the local session data of AI coding agents (Claude Cod
 
 const AFTER_HELP: &str = "Exit codes: 0 = clean, 1 = scan found something, 2 = error.
 
-Start with `sesscrub list`, then `sesscrub scan`. To try it on a copy first, copy your home-dir session folders into a directory and pass it with --root.";
+Start with `neuroalyzer list`, then `neuroalyzer scan`. To try it on a copy first, copy your home-dir session folders into a directory and pass it with --root.";
 
 #[derive(Parser)]
-#[command(name = "sesscrub", version, about = ABOUT, after_help = AFTER_HELP)]
+#[command(name = "neuroalyzer", version, about = ABOUT, after_help = AFTER_HELP)]
 struct Cli {
     /// More detail (repeat for more).
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -184,9 +184,9 @@ fn real_main(cli: Cli) -> anyhow::Result<i32> {
         Cmd::Restore { archive, force, pw } => run::restore(archive.clone(), *force, pw, cli.quiet),
         Cmd::Key {
             cmd: KeyCmd::Save { pw },
-        } => sesscrub::password::key_save(pw).map(|_| 0),
-        Cmd::Key { cmd: KeyCmd::Clear } => sesscrub::password::key_clear().map(|_| 0),
-        Cmd::Model { cmd: ModelCmd::Fetch } => sesscrub::ner::fetch(cli.quiet).map(|_| 0),
+        } => neuroalyzer::password::key_save(pw).map(|_| 0),
+        Cmd::Key { cmd: KeyCmd::Clear } => neuroalyzer::password::key_clear().map(|_| 0),
+        Cmd::Model { cmd: ModelCmd::Fetch } => neuroalyzer::ner::fetch(cli.quiet).map(|_| 0),
     }
 }
 

@@ -8,3 +8,4 @@
 report-*.json
 report-*.md
 /fixtures-out/
+/dist

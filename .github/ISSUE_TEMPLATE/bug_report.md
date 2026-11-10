@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a problem with sesscrub
+about: Report a problem with Neuroalyzer
 labels: bug
 ---
 
@@ -18,10 +18,10 @@ labels: bug
 
 **Environment**
 
-- sesscrub version (`sesscrub --version`):
+- Neuroalyzer version (`neuroalyzer --version`):
 - Operating system:
 - How you installed it (release archive, `cargo install`, built from source):
 
 **Scan output (optional)**
 
-Only attach `sesscrub scan --json` output after you have checked it yourself. It contains file paths but no secret values, but file paths can still reveal personal information, so remove anything you would not want public.
+Only attach `neuroalyzer scan --json` output after you have checked it yourself. It contains file paths but no secret values, but file paths can still reveal personal information, so remove anything you would not want public.

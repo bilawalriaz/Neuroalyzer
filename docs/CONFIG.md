@@ -1,16 +1,16 @@
 # Configuration
 
-sesscrub reads an optional TOML file. Without one, it uses the defaults. Command-line flags override the config where both set the same thing, as the reference below notes.
+Neuroalyzer reads an optional TOML file. Without one, it uses the defaults. Command-line flags override the config where both set the same thing, as the reference below notes.
 
 ## Where the file lives
 
 | OS | Default path |
 |---|---|
-| macOS | `~/Library/Application Support/sesscrub/config.toml` |
-| Linux | `~/.config/sesscrub/config.toml` |
-| Windows | `%APPDATA%\sesscrub\config.toml` |
+| macOS | `~/Library/Application Support/neuroalyzer/config.toml` |
+| Linux | `~/.config/neuroalyzer/config.toml` |
+| Windows | `%APPDATA%\neuroalyzer\config.toml` |
 
-To use another file, pass `--config FILE` or set `SESSCRUB_CONFIG`. The flag takes precedence over the variable. `--config` must point at an existing file, and sesscrub stops with an error if it does not. A missing file at the default path, or at the path in `SESSCRUB_CONFIG`, means the defaults are used. Run with `-v` to see which file was loaded.
+To use another file, pass `--config FILE` or set `NEUROALYZER_CONFIG`. The flag takes precedence over the variable. `--config` must point at an existing file, and Neuroalyzer stops with an error if it does not. A missing file at the default path, or at the path in `NEUROALYZER_CONFIG`, means the defaults are used. Run with `-v` to see which file was loaded.
 
 The file is strict. An unknown key or section is an error, and the message names the file. Check spelling when a run fails after you edit the config.
 
@@ -87,15 +87,15 @@ Each section is optional, and so is every key within it.
 
 | Variable | Effect |
 |---|---|
-| `SESSCRUB_CONFIG` | Config file to use instead of the default path. |
-| `SESSCRUB_DATA_DIR` | Data directory for backups, reports, the model and `hmac.key`. |
-| `SESSCRUB_MODEL_DIR` | Directory for the NER model. |
-| `SESSCRUB_NO_DOWNLOAD` | Never download the NER model. |
-| `SESSCRUB_NO_KEYRING` | Skip the OS keychain when looking for the backup password. |
-| `SESSCRUB_PASSWORD` | Backup password. sesscrub prints a warning when it is used. See [SAFETY.md](SAFETY.md). |
+| `NEUROALYZER_CONFIG` | Config file to use instead of the default path. |
+| `NEUROALYZER_DATA_DIR` | Data directory for backups, reports, the model and `hmac.key`. |
+| `NEUROALYZER_MODEL_DIR` | Directory for the NER model. |
+| `NEUROALYZER_NO_DOWNLOAD` | Never download the NER model. |
+| `NEUROALYZER_NO_KEYRING` | Skip the OS keychain when looking for the backup password. |
+| `NEUROALYZER_PASSWORD` | Backup password. Neuroalyzer prints a warning when it is used. See [SAFETY.md](SAFETY.md). |
 | `NO_COLOR` | Turn off coloured output. |
 
-These variables change where sesscrub looks for session data. They are ignored when `--root` is set.
+These variables change where Neuroalyzer looks for session data. They are ignored when `--root` is set.
 
 | Variable | Location it affects |
 |---|---|

@@ -1,19 +1,19 @@
-# sesscrub
+# Neuroalyzer
 
-[![CI](https://github.com/bilawalriaz/sesscrub/actions/workflows/ci.yml/badge.svg)](https://github.com/bilawalriaz/sesscrub/actions/workflows/ci.yml)
+[![CI](https://github.com/bilawalriaz/neuroalyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/bilawalriaz/neuroalyzer/actions/workflows/ci.yml)
 
-sesscrub finds the session data that AI coding agents keep on disk: Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot (VS Code chat history and Copilot CLI), OpenCode, Hermes Agent, OpenClaw, Factory Droid, pi and omp (oh-my-pi). It copies every file it is about to change into an encrypted backup, redacts secrets and personal data in place, and prints a report. `sesscrub restore` puts the files back from a backup.
+Neuroalyzer finds the session data that AI coding agents keep on disk: Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot (VS Code chat history and Copilot CLI), OpenCode, Hermes Agent, OpenClaw, Factory Droid, pi and omp (oh-my-pi). It copies every file it is about to change into an encrypted backup, redacts secrets and personal data in place, and prints a report. `neuroalyzer restore` puts the files back from a backup.
 
 It is a single binary for Windows, macOS and Linux. It makes no network calls, apart from the optional one-time download of the NER model.
 
 ## Quick start
 
 ```sh
-sesscrub list                 # what was found, where, and past backups
-sesscrub scan                 # report what would change, change nothing
-sesscrub clean                # back up (encrypted), then redact in place
-sesscrub restore              # pick a backup and put the files back
-sesscrub restore <NAME>       # restore a specific backup
+neuroalyzer list                  # what was found, where, and past backups
+neuroalyzer scan                  # report what would change, change nothing
+neuroalyzer clean                 # back up (encrypted), then redact in place
+neuroalyzer restore               # pick a backup and put the files back
+neuroalyzer restore <NAME>        # restore a specific backup
 ```
 
 Close your agents before running `clean`. Files modified in the last 120 seconds are skipped, which catches most active sessions but not all of them. `clean` asks for a backup password, then asks you to confirm before it changes anything. The password rules are in [docs/SAFETY.md](docs/SAFETY.md).
@@ -22,29 +22,45 @@ Close your agents before running `clean`. Files modified in the last 120 seconds
 
 ### Prebuilt binaries
 
-Download a binary from the [latest release](https://github.com/bilawalriaz/sesscrub/releases/latest). Builds are published for Linux x86_64, macOS arm64, macOS x86_64 and Windows x86_64, with a `SHA256SUMS.txt` file to check the download against.
+Download from the [latest release](https://github.com/bilawalriaz/neuroalyzer/releases/latest). Every release has a `SHA256SUMS.txt` file to check the download against.
 
-With the GitHub CLI (macOS arm64 shown; swap the target for your platform):
+Linux builds are published as a portable tarball, a `.deb` and an `.rpm`, all containing the same binary. It needs glibc 2.35 or newer, so it runs on Ubuntu 22.04 and later, Fedora 36 and later, Debian 12 and later, and their derivatives.
+
+Ubuntu and Debian:
 
 ```sh
-gh release download --repo bilawalriaz/sesscrub --pattern '*aarch64-apple-darwin.tar.gz' --pattern SHA256SUMS.txt
-shasum -a 256 --ignore-missing -c SHA256SUMS.txt
-tar -xzf sesscrub-*-aarch64-apple-darwin.tar.gz sesscrub && sudo mv sesscrub /usr/local/bin/
+gh release download --repo bilawalriaz/neuroalyzer --pattern '*.deb'
+sudo apt install ./neuroalyzer_*_amd64.deb
 ```
 
-Targets: `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` (a `.zip`).
+Fedora and RHEL:
+
+```sh
+gh release download --repo bilawalriaz/neuroalyzer --pattern '*.rpm'
+sudo dnf install ./neuroalyzer-*.x86_64.rpm
+```
+
+Portable tarball (Linux x86_64 shown; macOS users get a `-darwin.tar.gz` and Windows a `.zip`):
+
+```sh
+gh release download --repo bilawalriaz/neuroalyzer --pattern '*x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS.txt
+sha256sum --ignore-missing -c SHA256SUMS.txt
+tar -xzf neuroalyzer-*-x86_64-unknown-linux-gnu.tar.gz neuroalyzer && sudo mv neuroalyzer /usr/local/bin/
+```
+
+Targets: `x86_64-unknown-linux-gnu` (`.tar.gz`, `.deb`, `.rpm`), `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` (a `.zip`).
 
 ### Build from source
 
 You need Rust 1.89 or newer. Run `rustup update` if your version is older.
 
 ```sh
-git clone https://github.com/bilawalriaz/sesscrub
-cd sesscrub
+git clone https://github.com/bilawalriaz/neuroalyzer
+cd neuroalyzer
 cargo build --release
 ```
 
-The binary is at `target/release/sesscrub`, or `sesscrub.exe` on Windows.
+The binary is at `target/release/neuroalyzer`, or `neuroalyzer.exe` on Windows.
 
 The default build includes the `ner` feature, which pulls in ONNX Runtime. The `ort` crate downloads a prebuilt ONNX Runtime library (from pyke's CDN, `parcel.pyke.io`) during the build. If that download is blocked by a locked-down network or proxy, build without the feature:
 
@@ -58,12 +74,12 @@ Everything works except NER, which finds names, addresses and organisations.
 
 | Command | What it does |
 |---|---|
-| `sesscrub list` | Shows the tools found, where they are, how much data there is, and past backups. |
-| `sesscrub scan` | Reports what would be redacted. Writes report files and changes nothing else. |
-| `sesscrub clean` | Backs up the affected files, then redacts them in place. |
-| `sesscrub restore [ARCHIVE] [--force]` | Restores files from a backup. With no name, lists the backups newest first and asks which one to restore. |
-| `sesscrub key save` / `key clear` | Stores or removes the backup password in the OS keychain. |
-| `sesscrub model fetch` | Downloads the NER model now, so later runs work offline. |
+| `neuroalyzer list` | Shows the tools found, where they are, how much data there is, and past backups. |
+| `neuroalyzer scan` | Reports what would be redacted. Writes report files and changes nothing else. |
+| `neuroalyzer clean` | Backs up the affected files, then redacts them in place. |
+| `neuroalyzer restore [ARCHIVE] [--force]` | Restores files from a backup. With no name, lists the backups newest first and asks which one to restore. |
+| `neuroalyzer key save` / `key clear` | Stores or removes the backup password in the OS keychain. |
+| `neuroalyzer model fetch` | Downloads the NER model now, so later runs work offline. |
 
 Exit codes are 0 for a clean result, 1 when `scan` finds something, and 2 for an error. `restore` also exits with 2 when it skipped any file.
 
@@ -94,7 +110,7 @@ Global flags are `-v` (repeat for more detail), `-q`, `--no-color` and `--config
 
 ## What it finds
 
-sesscrub uses three detection layers.
+Neuroalyzer uses three detection layers.
 
 Secrets come from the gitleaks v8.30.1 default ruleset, vendored into the binary, where 216 rules apply. They also cover connection strings with passwords, Bearer tokens, and key=value pairs near names such as key, token, secret or password, checked with an entropy test. Exact values of secret-looking keys from `.env` files in the project directories the sessions point to are included too.
 
@@ -122,7 +138,7 @@ Each redacted value becomes a token such as `[EMAIL:3f9a1c2e]`. The eight hex ch
 
 ## What gets touched
 
-The tables below show where sesscrub looks. Exact globs are in `src/discovery.rs`, and [docs/FORMATS.md](docs/FORMATS.md) lists the formats and their upstream sources.
+The tables below show where Neuroalyzer looks. Exact globs are in `src/discovery.rs`, and [docs/FORMATS.md](docs/FORMATS.md) lists the formats and their upstream sources.
 
 | Tool | Where it looks | What it reads |
 |---|---|---|
@@ -144,15 +160,15 @@ The user data directory is `~/Library/Application Support` on macOS, `~/.config`
 
 `scan` reads files and writes nothing except the report. `clean` edits only the files that contain something to redact. Inside a JSON file, only string values are changed. Keys and the rest of the file stay byte-identical.
 
-sesscrub keeps its own files in the data directory:
+Neuroalyzer keeps its own files in the data directory:
 
 | OS | Data directory |
 |---|---|
-| macOS | `~/Library/Application Support/sesscrub` |
-| Linux | `~/.local/share/sesscrub` |
-| Windows | `%LOCALAPPDATA%\sesscrub` |
+| macOS | `~/Library/Application Support/neuroalyzer` |
+| Linux | `~/.local/share/neuroalyzer` |
+| Windows | `%LOCALAPPDATA%\neuroalyzer` |
 
-It holds `archives/` (backups), `reports/`, `models/` (the NER model) and `hmac.key`. Set `SESSCRUB_DATA_DIR` to use another location.
+It holds `archives/` (backups), `reports/`, `models/` (the NER model) and `hmac.key`. Set `NEUROALYZER_DATA_DIR` to use another location.
 
 ## Safety model
 
@@ -179,22 +195,22 @@ cp -Rp "$HOME/Library/Application Support/Code/User/workspaceStorage" \
        "$HOME/Library/Application Support/Code/User/globalStorage" \
        "$HOME/scrub-test/Library/Application Support/Code/User/"
 
-sesscrub list --root ~/scrub-test
-sesscrub scan --root ~/scrub-test
-sesscrub clean --root ~/scrub-test
-sesscrub restore <NAME>
+neuroalyzer list --root ~/scrub-test
+neuroalyzer scan --root ~/scrub-test
+neuroalyzer clean --root ~/scrub-test
+neuroalyzer restore <NAME>
 ```
 
-With `--root`, sesscrub checks all three OS layouts under that directory, and environment variable overrides are ignored. Project directories named in the sessions are still read, read-only, for `.env` values if they exist on this machine. Backups and reports still go to the real data directory, so `sesscrub restore` lists them from there.
+With `--root`, Neuroalyzer checks all three OS layouts under that directory, and environment variable overrides are ignored. Project directories named in the sessions are still read, read-only, for `.env` values if they exist on this machine. Backups and reports still go to the real data directory, so `neuroalyzer restore` lists them from there.
 
 ## Configuration
 
-sesscrub works without a config file. To change the defaults, such as the tools included, the number of backups kept, the allowlist, custom patterns or the NER threshold, see [docs/CONFIG.md](docs/CONFIG.md).
+Neuroalyzer works without a config file. To change the defaults, such as the tools included, the number of backups kept, the allowlist, custom patterns or the NER threshold, see [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Limitations
 
 - On macOS and Linux, a file that another program has open, but has not locked, cannot be detected. Close the agent first.
-- Copies outside the files sesscrub edits are out of reach. This includes filesystem snapshots and backups such as Time Machine, SSD remnants, and SQLite rollback journals that were already deleted.
+- Copies outside the files Neuroalyzer edits are out of reach. This includes filesystem snapshots and backups such as Time Machine, SSD remnants, and SQLite rollback journals that were already deleted.
 - Detection is based on patterns and the model. Review the report before you rely on a clean run.
 - NER is English-centric.
 - IPv6 addresses are not detected.
@@ -202,7 +218,7 @@ sesscrub works without a config file. To change the defaults, such as the tools 
 - SQLite full-text index tables are skipped, and the report notes it.
 - In VS Code's `state.vscdb`, only chat-related rows are touched.
 - Zstd-compressed Codex rollouts are rewritten at compression level 3, so a cleaned `.jsonl.zst` is not byte-identical to one Codex would write. `restore` puts the original bytes back.
-- Formats were researched on 2026-11-09. When a file does not match the expected layout, sesscrub falls back to generic handling and lists the file under "format drift" in the report.
+- Formats were researched on 2026-11-09. When a file does not match the expected layout, Neuroalyzer falls back to generic handling and lists the file under "format drift" in the report.
 
 ## Development
 
@@ -213,13 +229,13 @@ See [AGENTS.md](AGENTS.md) for the layout, how to add a new agent, and how relea
 The NER test needs the model in a local directory:
 
 ```sh
-SESSCRUB_MODEL_DIR=/some/dir sesscrub model fetch
-SESSCRUB_TEST_MODEL_DIR=/some/dir cargo test --release --test ner
+NEUROALYZER_MODEL_DIR=/some/dir neuroalyzer model fetch
+NEUROALYZER_TEST_MODEL_DIR=/some/dir cargo test --release --test ner
 ```
 
 ## Speed
 
-Without NER, scanning is limited mostly by disk reads. NER runs a transformer model on every unique chunk of prose, so it is far slower, and its speed depends on how much distinct prose your sessions hold. To see the real numbers for your data, time `sesscrub scan --root` on a copy (see "Testing on a copy"). The report prints elapsed time and MB/s.
+Without NER, scanning is limited mostly by disk reads. NER runs a transformer model on every unique chunk of prose, so it is far slower, and its speed depends on how much distinct prose your sessions hold. To see the real numbers for your data, time `neuroalyzer scan --root` on a copy (see "Testing on a copy"). The report prints elapsed time and MB/s.
 
 ## Licence
 

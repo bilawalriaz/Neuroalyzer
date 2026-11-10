@@ -1,13 +1,13 @@
 //! Encrypted backups.
 //!
-//! Layout: `sesscrub-<ts>.tar.zst.age` is a tar stream, zstd-compressed (level
+//! Layout: `neuroalyzer-<ts>.tar.zst.age` is a tar stream, zstd-compressed (level
 //! 3, multithreaded), then age-encrypted with a scrypt passphrase. Nothing is
 //! written to disk in plaintext. The first tar entry is `manifest.json` (paths,
 //! sizes, mtimes, modes and BLAKE3 "before" hashes); file bodies follow as
 //! `files/NNNNNN`.
 //!
 //! The "after" hashes only exist once redaction finishes, so they go in a small
-//! sidecar, `sesscrub-<ts>.after.age`, encrypted with the same password. That
+//! sidecar, `neuroalyzer-<ts>.after.age`, encrypted with the same password. That
 //! keeps the archive itself write-once and verifiable before any session file
 //! is touched.
 
@@ -41,7 +41,7 @@ pub struct Entry {
 pub struct Manifest {
     pub version: u32,
     pub created_at: String,
-    pub sesscrub_version: String,
+    pub neuroalyzer_version: String,
     pub entries: Vec<Entry>,
 }
 
@@ -70,7 +70,7 @@ fn encryptor(pw: &SecretString) -> age::Encryptor {
 }
 
 fn decrypt_reader<R: Read>(r: R, pw: &SecretString) -> Result<impl Read> {
-    let d = age::Decryptor::new(r).context("this doesn't look like a sesscrub archive")?;
+    let d = age::Decryptor::new(r).context("this doesn't look like a neuroalyzer archive")?;
     let id = age::scrypt::Identity::new(pw.clone());
     d.decrypt(std::iter::once(&id as &dyn age::Identity))
         .map_err(|e| match e {
@@ -101,9 +101,9 @@ fn reserve(dir: &Path) -> Result<(PathBuf, File)> {
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     for i in 0u32.. {
         let base = if i == 0 {
-            dir.join(format!("sesscrub-{ts}"))
+            dir.join(format!("neuroalyzer-{ts}"))
         } else {
-            dir.join(format!("sesscrub-{ts}-{i}"))
+            dir.join(format!("neuroalyzer-{ts}-{i}"))
         };
         let final_path = archive_path(&base);
         if final_path.exists() {
@@ -124,9 +124,9 @@ fn partial_path(p: &Path) -> PathBuf {
 }
 
 /// Ordering key from an archive file name: (timestamp, collision suffix).
-/// `None` for names sesscrub didn't make.
+/// `None` for names neuroalyzer didn't make.
 pub fn name_key(name: &str) -> Option<(String, u32)> {
-    let stem = name.strip_prefix("sesscrub-")?.strip_suffix(ARCHIVE_EXT)?;
+    let stem = name.strip_prefix("neuroalyzer-")?.strip_suffix(ARCHIVE_EXT)?;
     let (ts, n) = match stem.get(15..) {
         Some("") => (stem, 0),
         Some(rest) => (&stem[..15], rest.strip_prefix('-')?.parse().ok()?),
@@ -198,7 +198,7 @@ pub fn create(
     let manifest = Manifest {
         version: 1,
         created_at: chrono::Local::now().to_rfc3339(),
-        sesscrub_version: env!("CARGO_PKG_VERSION").into(),
+        neuroalyzer_version: env!("CARGO_PKG_VERSION").into(),
         entries,
     };
     let (final_path, f) = reserve(dir)?;
@@ -363,7 +363,7 @@ pub fn list(dir: &Path) -> Vec<ArchiveInfo> {
         .collect();
     // Newest first. Compare the timestamp, then the collision suffix as a
     // number: plain name order puts `-1` below the un-suffixed archive of the
-    // same second and `-10` below `-2`. Names sesscrub didn't make go last.
+    // same second and `-10` below `-2`. Names neuroalyzer didn't make go last.
     v.sort_by(|a, b| match (name_key(&a.name), name_key(&b.name)) {
         (Some(x), Some(y)) => y.cmp(&x),
         (Some(_), None) => std::cmp::Ordering::Less,
@@ -374,7 +374,7 @@ pub fn list(dir: &Path) -> Vec<ArchiveInfo> {
 }
 
 /// Keep the newest `keep` archives (and their sidecars); delete the rest.
-/// Only archives with names sesscrub made are counted or deleted. Leftover
+/// Only archives with names neuroalyzer made are counted or deleted. Leftover
 /// `.partial` files from interrupted runs are removed too: the caller holds the
 /// run lock, so no other run can be writing one.
 pub fn prune(dir: &Path, keep: usize) -> Vec<PathBuf> {
@@ -389,7 +389,7 @@ pub fn prune(dir: &Path, keep: usize) -> Vec<PathBuf> {
     }
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let n = e.file_name().to_string_lossy().to_string();
-        if n.starts_with("sesscrub-") && n.ends_with(".partial") {
+        if n.starts_with("neuroalyzer-") && n.ends_with(".partial") {
             let _ = std::fs::remove_file(e.path());
         }
     }
@@ -572,7 +572,9 @@ pub fn restore(
         }
         let dir = target.parent().context("bad path in archive")?;
         std::fs::create_dir_all(dir)?;
-        let mut tmp = tempfile::Builder::new().prefix(".sesscrub-restore-").tempfile_in(dir)?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".neuroalyzer-restore-")
+            .tempfile_in(dir)?;
         let mut hr = HashingReader {
             inner: &mut ent,
             h: blake3::Hasher::new(),
@@ -631,18 +633,18 @@ mod tests {
     }
 
     #[test]
-    fn name_key_parses_sesscrub_names_only() {
+    fn name_key_parses_neuroalyzer_names_only() {
         assert_eq!(
-            name_key("sesscrub-20261109-120000.tar.zst.age"),
+            name_key("neuroalyzer-20261109-120000.tar.zst.age"),
             Some(("20261109-120000".into(), 0))
         );
         assert_eq!(
-            name_key("sesscrub-20261109-120000-12.tar.zst.age"),
+            name_key("neuroalyzer-20261109-120000-12.tar.zst.age"),
             Some(("20261109-120000".into(), 12))
         );
         assert_eq!(name_key("my-copy.tar.zst.age"), None);
-        assert_eq!(name_key("sesscrub-2026-11-09.tar.zst.age"), None);
-        assert_eq!(name_key("sesscrub-20261109-120000-x.tar.zst.age"), None);
+        assert_eq!(name_key("neuroalyzer-2026-11-09.tar.zst.age"), None);
+        assert_eq!(name_key("neuroalyzer-20261109-120000-x.tar.zst.age"), None);
     }
 
     /// Regression: `-1` sorted below the un-suffixed archive of the same second
@@ -652,11 +654,11 @@ mod tests {
     fn collision_suffixes_sort_newest_first() {
         let d = tempfile::tempdir().unwrap();
         for n in [
-            "sesscrub-20261109-115959.tar.zst.age",
-            "sesscrub-20261109-120000.tar.zst.age",
-            "sesscrub-20261109-120000-1.tar.zst.age",
-            "sesscrub-20261109-120000-2.tar.zst.age",
-            "sesscrub-20261109-120000-10.tar.zst.age",
+            "neuroalyzer-20261109-115959.tar.zst.age",
+            "neuroalyzer-20261109-120000.tar.zst.age",
+            "neuroalyzer-20261109-120000-1.tar.zst.age",
+            "neuroalyzer-20261109-120000-2.tar.zst.age",
+            "neuroalyzer-20261109-120000-10.tar.zst.age",
         ] {
             touch(d.path(), n);
         }
@@ -664,11 +666,11 @@ mod tests {
         assert_eq!(
             names,
             [
-                "sesscrub-20261109-120000-10.tar.zst.age",
-                "sesscrub-20261109-120000-2.tar.zst.age",
-                "sesscrub-20261109-120000-1.tar.zst.age",
-                "sesscrub-20261109-120000.tar.zst.age",
-                "sesscrub-20261109-115959.tar.zst.age",
+                "neuroalyzer-20261109-120000-10.tar.zst.age",
+                "neuroalyzer-20261109-120000-2.tar.zst.age",
+                "neuroalyzer-20261109-120000-1.tar.zst.age",
+                "neuroalyzer-20261109-120000.tar.zst.age",
+                "neuroalyzer-20261109-115959.tar.zst.age",
             ]
         );
     }
@@ -677,12 +679,12 @@ mod tests {
     fn prune_keeps_the_newest_collision_and_foreign_files() {
         let d = tempfile::tempdir().unwrap();
         for n in [
-            "sesscrub-20261109-120000.tar.zst.age",
-            "sesscrub-20261109-120000.after.age",
-            "sesscrub-20261109-120000-1.tar.zst.age",
-            "sesscrub-20261109-120000-1.after.age",
+            "neuroalyzer-20261109-120000.tar.zst.age",
+            "neuroalyzer-20261109-120000.after.age",
+            "neuroalyzer-20261109-120000-1.tar.zst.age",
+            "neuroalyzer-20261109-120000-1.after.age",
             "hand-copied.tar.zst.age",
-            "sesscrub-20261109-110000.tar.zst.age.partial",
+            "neuroalyzer-20261109-110000.tar.zst.age.partial",
         ] {
             touch(d.path(), n);
         }
@@ -698,8 +700,8 @@ mod tests {
             left,
             [
                 "hand-copied.tar.zst.age",
-                "sesscrub-20261109-120000-1.after.age",
-                "sesscrub-20261109-120000-1.tar.zst.age",
+                "neuroalyzer-20261109-120000-1.after.age",
+                "neuroalyzer-20261109-120000-1.tar.zst.age",
             ]
         );
     }
@@ -720,7 +722,7 @@ mod tests {
     #[test]
     fn journal_round_trip_ignores_torn_lines() {
         let d = tempfile::tempdir().unwrap();
-        let a = d.path().join("sesscrub-20261109-120000.tar.zst.age");
+        let a = d.path().join("neuroalyzer-20261109-120000.tar.zst.age");
         let j = Journal::create(&a).unwrap();
         let h = "a".repeat(64);
         j.record("files/000000", Some(&h)).unwrap();

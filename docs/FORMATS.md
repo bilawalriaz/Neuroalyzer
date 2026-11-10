@@ -1,6 +1,6 @@
 # Session storage formats
 
-What sesscrub knows about each tool's local storage, with links to the upstream source it was read from. The research was done on 2026-11-09 against the commits pinned below. Formats change: sesscrub treats this knowledge as a fast path and falls back to generic handling (every JSON string, every SQLite TEXT cell, every text line) when a file doesn't match, noting it as "format drift" in the report.
+What Neuroalyzer knows about each tool's local storage, with links to the upstream source it was read from. The research was done on 2026-11-09 against the commits pinned below. Formats change: Neuroalyzer treats this knowledge as a fast path and falls back to generic handling (every JSON string, every SQLite TEXT cell, every text line) when a file doesn't match, noting it as "format drift" in the report.
 
 Anything marked UNVERIFIED was not confirmed from source.
 
@@ -220,7 +220,7 @@ Researched on 2026-11-09. Hermes and OpenClaw paths were read from upstream sour
 
 ### Claude Code (`claude`)
 - Home: `~/.claude`, or `$CLAUDE_CONFIG_DIR`.
-- `projects/<cwd with / replaced by ->/<sessionId>.jsonl`: one JSON object per line. Every line has `type` (`user`, `assistant`, `summary`, `queue-operation`, ...). Message lines carry `cwd`, `sessionId`, `uuid` and `message`. sesscrub reads `cwd` from the first 20 lines to find project `.env` files.
+- `projects/<cwd with / replaced by ->/<sessionId>.jsonl`: one JSON object per line. Every line has `type` (`user`, `assistant`, `summary`, `queue-operation`, ...). Message lines carry `cwd`, `sessionId`, `uuid` and `message`. Neuroalyzer reads `cwd` from the first 20 lines to find project `.env` files.
 - `projects/*/<sessionId>/subagents/agent-*.jsonl`: same shape, for subagents.
 - `projects/*/<sessionId>/tool-results/*`: large tool outputs spilled to disk (text; images are skipped as binary).
 - `projects/*/memory/*.md`, `plans/*.md`, `todos/*.json`, `history.jsonl` (prompt history), `paste-cache/*`.
@@ -230,7 +230,7 @@ Researched on 2026-11-09. Hermes and OpenClaw paths were read from upstream sour
 ### Codex CLI (`codex`)
 - Home: `~/.codex`, or `$CODEX_HOME`.
 - `sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`: envelope `{timestamp, type, payload}`. The first line is `type: "session_meta"` with `payload.cwd`.
-- `archived_sessions/rollout-*.jsonl` and `*.jsonl.zst`: archived rollouts, newer ones zstd-compressed. sesscrub decompresses in memory, redacts as JSONL and recompresses (level 3).
+- `archived_sessions/rollout-*.jsonl` and `*.jsonl.zst`: archived rollouts, newer ones zstd-compressed. Neuroalyzer decompresses in memory, redacts as JSONL and recompresses (level 3).
 - `history.jsonl` (`{session_id, ts, text}`), `session_index.jsonl` (thread names).
 - SQLite: `state_*.sqlite` (`threads` holds `title`, `first_user_message`, `cwd`, `git_origin_url`), `thread_history_*.sqlite` (`thread_items`), `memories_*.sqlite`. `logs_*.sqlite`, `goals_*` and `queue_*` are left alone.
 - Not touched: `auth.json`, `config.toml`.
@@ -244,7 +244,7 @@ Researched on 2026-11-09. Hermes and OpenClaw paths were read from upstream sour
 ### Hermes Agent (`hermes`)
 Source: `NousResearch/hermes-agent` @ `6cff782b`.
 - Home: `$HERMES_HOME`, else `~/.hermes` (`%LOCALAPPDATA%\hermes` on Windows); `HERMES_DATA_DIR_SUFFIX` can append a suffix (not followed). `hermes_constants.py`, `_platform_default_hermes_home`.
-- `state.db`: SQLite with `sessions` and `messages` (`content`, `tool_calls`, `reasoning`, ...). `hermes_state_common.py` `SCHEMA_SQL`. The `messages_fts*` FTS5 tables are external-content indexes kept in sync by `AFTER UPDATE` triggers, so sesscrub skips them and the triggers re-index the redacted rows.
+- `state.db`: SQLite with `sessions` and `messages` (`content`, `tool_calls`, `reasoning`, ...). `hermes_state_common.py` `SCHEMA_SQL`. The `messages_fts*` FTS5 tables are external-content indexes kept in sync by `AFTER UPDATE` triggers, so Neuroalyzer skips them and the triggers re-index the redacted rows.
 - `sessions/<id>.json`, `<id>.jsonl`, `session_<id>.json` and `sessions.json` (`hermes_state_sessions.py`, `hermes_state.py`).
 - Profiles: `profiles/<name>/state.db` and `profiles/<name>/sessions/` (`hermes_state_profile_repair.py`).
 - Not touched: `.env`, `auth.json`, `config.yaml`.

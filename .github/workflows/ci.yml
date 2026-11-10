@@ -6,8 +6,33 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  NFPM_VERSION: 2.48.0
 
 jobs:
+  linux-packages:
+    name: linux packages (glibc 2.35, Ubuntu + Fedora)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+      - name: Build release binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/nfpm.tar.gz" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C /usr/local/bin nfpm
+      - name: Package Linux artifacts
+        run: scripts/package-linux.sh "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+      - name: Verify on Ubuntu and Fedora
+        run: scripts/verify-linux.sh dist
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -23,7 +48,7 @@ jobs:
         run: cargo build --workspace --locked
       - name: Test workspace
         env:
-          SESSCRUB_NO_KEYRING: "1"
+          NEUROALYZER_NO_KEYRING: "1"
         run: cargo test --workspace --locked
       - name: Build without default features (no ONNX/NER)
         run: cargo build --locked --no-default-features

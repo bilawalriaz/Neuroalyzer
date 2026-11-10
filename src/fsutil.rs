@@ -137,7 +137,7 @@ fn stage(p: &Path, data: &[u8]) -> Result<tempfile::NamedTempFile> {
     let dir = p.parent().context("file has no parent dir")?;
     let perms = std::fs::metadata(p).ok().map(|m| m.permissions());
     let mut tmp = tempfile::Builder::new()
-        .prefix(".sesscrub-")
+        .prefix(".neuroalyzer-")
         .tempfile_in(dir)
         .with_context(|| format!("couldn't create a temp file in {}", dir.display()))?;
     tmp.write_all(data)?;

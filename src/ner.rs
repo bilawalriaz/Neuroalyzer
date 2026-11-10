@@ -147,7 +147,7 @@ mod imp {
                 );
             }
             let resp = ureq::get(&url).call().with_context(|| {
-                format!("couldn't download {url}. Check your network or proxy, then run `sesscrub model fetch`.")
+                format!("couldn't download {url}. Check your network or proxy, then run `neuroalyzer model fetch`.")
             })?;
             let reader = resp.into_body().into_reader();
             let pb = if quiet {
@@ -190,8 +190,8 @@ mod imp {
     impl Ner {
         pub fn load(cfg: &NerConfig, quiet: bool) -> Result<Self> {
             if !present() {
-                if std::env::var_os("SESSCRUB_NO_DOWNLOAD").is_some() {
-                    bail!("the NER model isn't downloaded. Run `sesscrub model fetch`, or use --no-ner");
+                if std::env::var_os("NEUROALYZER_NO_DOWNLOAD").is_some() {
+                    bail!("the NER model isn't downloaded. Run `neuroalyzer model fetch`, or use --no-ner");
                 }
                 if !quiet {
                     eprintln!("The NER model isn't downloaded yet; fetching it once (about 205 MB).");

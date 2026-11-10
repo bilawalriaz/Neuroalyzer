@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an improvement to sesscrub
+about: Suggest an improvement to Neuroalyzer
 labels: enhancement
 ---
 
