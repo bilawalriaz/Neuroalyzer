@@ -2,7 +2,7 @@
 
 This page maps every state machine in Neuralyzer, explicit or implicit. For each one it gives the states, the transitions and the invariants the code relies on. It then lists the invalid states and transitions that the code could actually reach, with evidence, and what was done about each.
 
-Audit baseline: commit `5814b2f`. Every finding below is fixed on `main`. Fixed findings link to the issue that holds the full write-up. The [Residual risks](#residual-risks) section lists what is known and still open.
+The historical findings use commit `5814b2f` as the audit baseline. The state tables describe the current clean, live restore and recovery paths.
 
 ## Contents
 
@@ -26,8 +26,8 @@ Audit baseline: commit `5814b2f`. Every finding below is fixed on `main`. Fixed 
 
 None of these machines is an `enum` with a `match`. Each is implicit in one of three places:
 
-- the order of statements in `run::clean` and `run::restore`
-- the files present in the data directory
+- the order of statements in `run::clean`, `run::restore` and `undo`
+- the files present in the data directory and the session staging directory
 - how a session file's hash compares with the `before` and `after` hashes in a backup
 
 That makes them easy to break by reordering code, so each section below states the invariant that a change has to keep.
@@ -37,8 +37,8 @@ That makes them easy to break by reordering code, so each section below states t
 | SM1 clean run | `run::clean` | Control flow |
 | SM2 candidate group | `run::redact_group` | Control flow and file hashes |
 | SM3 backup files | `backup::{reserve, create, Journal, write_after, prune}` | Files in `archives/` |
-| SM4 restore group | `backup::restore` | Hash comparisons |
-| SM5 session file | Spans clean and restore | Hash of the file vs `before` and `after` |
+| SM4 restore session | `undo::restore` | Commit evidence and exact string comparisons |
+| SM5 session file | Spans clean and restore | Event ID, field path and value |
 | SM6 SQLite write | `sqlite::process_checked` | SQLite lock state |
 | SM7 password | `password::resolve` | Ordered chain |
 | SM8 HMAC key | `token::Tokenizer::load_or_create` | A file in the data dir |
@@ -78,7 +78,7 @@ stateDiagram-v2
 | Redacting | all groups finished | Redacted | Each group is Written or Skipped (SM2). |
 | Redacted | `write_after` ok | Sealed | `.after.age` written. Journal deleted. |
 | Redacted | `write_after` fails | Degraded | Journal kept. Report still written. Exit 2. |
-| Redacting or Redacted | process dies | Interrupted | Archive and journal on disk, no sidecar. Restore uses the journal (SM3). |
+| Redacting or Redacted | process dies | Interrupted | Archive and journal on disk, no sidecar. Full-file recovery uses the archive. Copilot live restore uses the edit record and commit evidence (SM3). |
 
 Invariants:
 
@@ -113,6 +113,7 @@ stateDiagram-v2
 | BackedUp (SQLite) | Inside `BEGIN IMMEDIATE`: a hash ≠ `before`, or a companion that wasn't backed up is non-empty | SkippedChanged | No after-hash, transaction rolled back |
 | Staged | On-disk hash ≠ `before` just before the rename | SkippedChanged | Temp file removed, nothing journalled |
 | Staged | Unchanged | Journalled, then Written | Journal: the hash of the bytes written |
+| Copilot staged | Undo record is encrypted, verified and synced | Journalled, then Written | Atomic rename consumes the staged file. A receipt is synced after the rename. |
 | Committed | Any later step fails | Written | Drift note, report `modified: true` |
 
 Invariants:
@@ -133,8 +134,9 @@ States are named by which files exist for one backup base name `B` under `archiv
 | Archived | `B.tar.zst.age` | Verify ok, then rename | No session file touched yet. |
 | Journalling | archive + `B.after.journal` | `Journal::create` | Redaction in progress. |
 | Sealed | archive + `B.after.age` | `write_after`, then journal removed | Normal end state. |
-| Recoverable | archive + journal, no sidecar | Crash or `write_after` failure | Restore uses the journal. |
-| Pruned | none | `prune` | Only names Neuralyzer made are pruned. |
+| Recoverable | archive + journal, no sidecar | Crash or `write_after` failure | Full-file recovery reads the archive. |
+| Copilot undo | archive + `B.after.undo/` | Before a Copilot session is replaced | Encrypted edits per session, plus an applied receipt after each successful rename. |
+| Pruned | none in archive directory | `prune` | Removes the archive and its sidecars, including `B.after.undo/`. |
 | Stale partial | `B….partial` with no live run | Crash during `create` | Removed by the next `prune`, which runs under the run lock. |
 
 | Transition | Guard or ordering |
@@ -153,38 +155,29 @@ Invariants:
 
 ## SM4. One group during restore
 
-The decision is made once per group, when its first entry (the main file) is read from the archive.
+The unit of live restore is one Copilot CLI `events.jsonl` file. The archive manifest binds each encrypted undo record to a run ID and entry ID. A record stores exact JSON string literals, including their original escape sequences. Its age key is stored inside the encrypted archive manifest and is omitted from the recovery manifest.
 
-| Condition, checked in this order | Decision | Reported as |
+| State | Evidence | Decision |
 |---|---|---|
-| Every file in the group hashes to `before` | Leave all | `unchanged` |
-| Any file in the group is locked or open elsewhere | Skip all, **even with `--force`** | `active: …; not overwritten` (F9) |
-| Every file matches its after-hash (from the sidecar or the journal) | Restore | `restored` |
-| `--force` | Restore | `restored` |
-| The sidecar has no after-hash for any file in the group | Skip | `clean didn't change this file …` (F10) |
-| Terminal and the user says yes | Restore | `restored` |
-| Otherwise | Skip | `changed since cleaning …` |
+| No undo | Older archive, unsupported file, or missing record | Report the skip. Full-file recovery is available with `--into`. |
+| Staged | No applied receipt, and the recorded staging directory still contains the staged file | Leave the session unchanged. |
+| Applied | The applied receipt matches the run and entry, or the recorded staging directory exists and the atomic rename consumed the staged file | Check the live session (SM5). |
+| Unknown | Missing staging directory and receipt, or invalid receipt | Report the skip. |
 
-Each entry is then handled on its own. An entry already at `before` is `unchanged`. An entry whose archived bytes don't hash to `before` is skipped as damaged. Otherwise it is written atomically with its original mode and mtime, and for SQLite the stale `-shm` file and any `-wal` or `-journal` that wasn't backed up are removed.
+On Unix the clean syncs the staged file and both directory entries before committing. The stage is kept after writing the record. Only the rename consumes it. After the rename, clean syncs the session and staging directories before writing the receipt, then removes the staging directory. Interrupted runs may leave a private staging directory beside the session. Keep it in place while the backup still needs commit evidence.
 
-Invariants:
-
-- **I4.1** Restore never replaces a file another process has locked or open (F9).
-- **I4.2** Restore never silently replaces content that clean didn't write (F10).
-- **I4.3** A clean that was interrupted can still be restored without `--force` (F2, through the journal).
+`restore --into` streams full originals into a new directory, checks each file against the archive manifest and publishes it under its numbered entry ID. It does not use live paths as write destinations.
 
 ## SM5. A session file across runs
 
-Let `h` be the file's current hash, and `before` and `after` the values in the newest backup that contains it.
+| Live session | Decision |
+|---|---|
+| Each event ID is unique and all edited fields hold the exact replacements | Splice the original strings, validate the staged JSONL, recheck the live hash and replace atomically. |
+| All edited fields hold the exact originals | Leave the session unchanged. |
+| An event or field is missing or ambiguous, or any other value is present | Skip the session and print the reason. |
+| The session is locked or changes before the rename | Skip the session. |
 
-| State | Definition | Next clean | Restore |
-|---|---|---|---|
-| Original | `h == before` (or never backed up) | Candidate if it has findings | `unchanged` |
-| Redacted | `h == after` | Usually no findings, so not a candidate | Restores without asking |
-| Edited | `h ∉ {before, after}` | New candidate, new backup | Asks, or skips without a terminal; `--force` overwrites |
-| Untouched-but-moved | Clean skipped it, and `h != before` | Candidate | Skips (`clean didn't change …`) unless `--force` |
-
-Before the fix, Untouched-but-moved was folded into Redacted, which was the invalid transition behind F10.
+New events do not affect the recorded field paths. If two cleans edited the same field, undo the newer edit first so the older replacement can match again.
 
 ## SM6. The SQLite write transaction
 
@@ -253,11 +246,11 @@ The findings are grouped into issues by root cause. The fix commit lists each is
 |---|---|---|---|
 | [#6 Backups: newest archive can be pruned; same-second runs collide; restore prefix not unique](https://github.com/bilawalriaz/neuralyzer/issues/6) | F1, F5, F6, F7 | `backup::name_key` ordering; `reserve` with `create_new`; `run::resolve_archive`; `paths::lock_data_dir`; prune removes stale partial files | `backup::tests::{collision_suffixes_sort_newest_first, prune_keeps_the_newest_collision_and_foreign_files, concurrent_reservations_get_distinct_names, name_key_parses_neuralyzer_names_only}`, `run::tests::ambiguous_prefix_is_refused`, `e2e::concurrent_runs_are_refused` |
 | [#7 Clean: redaction races the agent (check-then-act)](https://github.com/bilawalriaz/neuralyzer/issues/7) | F3, F4, F8 | `fsutil::rewrite_checked`; `sqlite::process_checked` with the precheck under `BEGIN IMMEDIATE`; `run::redact_group` checks locks again | `fsutil::tests::rewrite_checked_*`, `sqlite::tests::{precheck_runs_under_the_write_lock, failed_precheck_changes_nothing}`, `run::tests::redact_group_*` |
-| [#8 Restore: overwrites locked files and silently rolls back edits clean never made](https://github.com/bilawalriaz/neuralyzer/issues/8) | F9, F10 | Restore checks `lock_reason` per group; after-hashes come only from clean's own writes | `e2e::restore_skips_locked_files`, `backup::restore_tests::restore_leaves_files_clean_never_wrote` |
-| [#9 Interrupted or partly failed clean leaves backup and report inconsistent](https://github.com/bilawalriaz/neuralyzer/issues/9) | F2, F11, F12 | `backup::Journal` with fallback in `load_after`; errors after `COMMIT` become notes; a sidecar failure is no longer fatal | `e2e::interrupted_clean_is_restorable_without_force`, `e2e::vacuum_failure_after_commit_is_reported_as_modified`, `backup::tests::journal_round_trip_ignores_torn_lines` |
+| [#8 Restore: overwrites locked files and silently rolls back edits clean never made](https://github.com/bilawalriaz/neuralyzer/issues/8) | F9, F10 | Restore checks `lock_reason` per group; after-hashes come only from clean's own writes | `undo::restore_skips_locked_sessions`, `undo::interruption_before_and_after_rename` |
+| [#9 Interrupted or partly failed clean leaves backup and report inconsistent](https://github.com/bilawalriaz/neuralyzer/issues/9) | F2, F11, F12 | `backup::Journal` with fallback in `load_after`; errors after `COMMIT` become notes; a sidecar failure is no longer fatal | `e2e::interrupted_clean_backup_can_be_recovered`, `e2e::vacuum_failure_after_commit_is_reported_as_modified`, `backup::tests::journal_round_trip_ignores_torn_lines` |
 | [#10 HMAC key can be silently replaced or diverge; model download partial files](https://github.com/bilawalriaz/neuralyzer/issues/10) | F13, F14 | `Tokenizer::load_or_create` with no-clobber and no replacement; `fsutil::install_verified` | `token::tests::*`, `fsutil::tests::install_verified_*` |
 
-Two tests, `interrupted_clean_is_restorable_without_force` and `vacuum_failure_after_commit_is_reported_as_modified`, stop the run at a chosen step with `NEURALYZER_TEST_FAULT`. Only debug builds honour it (`fault::hit`), and the tests are ignored in release builds. On `5814b2f` they fail because the hook doesn't exist there. The evidence for F2 is the CLI reproduction above, and the evidence for F11 is the code path.
+Debug builds use `NEURALYZER_TEST_FAULT` to test interruption before and after the Copilot rename, interruption before the after-hash sidecar is written and a VACUUM failure after commit.
 
 ## Residual risks
 
@@ -267,9 +260,9 @@ These are known and not fixed, either because they can't be fixed from Neuralyze
 |---|---|---|
 | A few microseconds between `rewrite_checked`'s final hash check and `rename` | Closing it fully needs agents to cooperate on locking | The window is now the smallest the OS allows. Close agents first (README). |
 | On Unix, a program that has a file open without a lock is invisible | No portable way to see open handles | Already documented in README and SAFETY. |
-| SQLite: a crash between `COMMIT` and journalling that database's after-hash | The after-hash is only known after `VACUUM` and `close` | That one group falls back to "ask, or `--force`" on restore. Every other group is unaffected. |
+| SQLite: a crash between `COMMIT` and journalling that database's after-hash | The after-hash is only known after `VACUUM` and `close` | Full-file recovery uses the verified archive. |
 | Archive names use local time, so a second clean in the repeated hour after a DST change ranks below the first | Changing the name format would misorder existing archives | Only matters with `--keep 1` and two cleans in that hour. |
-| A truncated archive aborts restore partway through a group | age reports the damage only when it reaches it | Restore stops with an error. Run it again after replacing the archive. |
+| A truncated archive can interrupt full-file recovery | age reports the damage only when it reaches it | Use a new recovery folder after replacing the archive. |
 
 ## Keeping this page current
 

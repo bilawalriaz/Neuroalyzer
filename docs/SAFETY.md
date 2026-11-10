@@ -13,29 +13,30 @@ This page describes what `clean` and `restore` do, in order, and what each step 
 4. Get the backup password. See [Passwords](#passwords).
 5. Write the encrypted archive with only the files that will change, including SQLite `-wal` and `-journal` files. Re-open the archive, decrypt it and check every hash. If any check fails, the partial archive is deleted and no session file is changed.
 6. Redact each file. Just before each file is written, Neuralyzer checks it is not locked by another process, then reads it once and checks that those bytes match the backup hash. It redacts those same bytes, and checks the file on disk again immediately before replacing it. If the file changed at any point, it is left alone and the report says so. For SQLite the check runs inside the write transaction, so no other process can commit between the check and the redaction.
-7. As each file is written, its after-redaction hash is appended to a recovery journal and flushed to disk before the file is replaced.
-8. Write the after-redaction hashes to the encrypted sidecar, then delete the journal. If the run stops before this step (Ctrl-C, crash, power loss), the journal stays and `restore` uses it.
+7. For Copilot CLI `events.jsonl`, write and verify the encrypted edit record before replacing the session file. Record after-redaction hashes in the journal, before replacing text files and after committing SQLite changes.
+8. Write the after-redaction hashes to the encrypted sidecar, then delete the journal. If the run stops before this step (Ctrl-C, crash, power loss), the journal stays. Copilot live restore uses the edit record and its commit evidence.
 9. Delete backups beyond the number to keep (`--keep`, default 5), and any leftover partial files from interrupted runs.
 
 ## Backup format
 
-Each backup is one archive plus one sidecar.
+Each backup contains a full-file archive. A run can also write the following companion files.
 
 | File | Contents |
 |---|---|
 | `neuralyzer-<timestamp>.tar.zst.age` | The backup itself. Written once, then verified. |
 | `neuralyzer-<timestamp>.after.age` | Hashes of each file that clean wrote, after redaction. Written after the redaction pass. |
-| `neuralyzer-<timestamp>.after.journal` | Only while `clean` runs, or after it was interrupted. The same hashes, written one by one as files are replaced. It holds entry ids and hashes of redacted content, never values, and is owner-only. |
+| `neuralyzer-<timestamp>.after.journal` | After-hashes recorded during clean. The journal holds entry IDs and hashes. |
+| `neuralyzer-<timestamp>.after.undo/` | Encrypted Copilot edit records and their commit receipts. Keep this folder beside the archive for live restore. |
 
 Two backups made in the same second get a suffix: `neuralyzer-<timestamp>-1`, `-2`, and so on. The suffix counts as newer, so the newest backup is always kept.
 
 The archive is built in three layers. The files are packed with tar, compressed with zstd at level 3 (multithreaded), and then encrypted with age, using a passphrase protected by scrypt. Everything is streamed, so no plaintext copy is written to disk.
 
-The first entry in the tar is `manifest.json`. It lists each file with its original path, size, modification time, Unix mode and BLAKE3 hash, which is the "before" hash. The file bodies follow as `files/000000`, `files/000001` and so on. Each file in the manifest also has a group number. A SQLite database and its `-wal` or `-journal` share a group, so restore handles them together.
+The first entry in the tar is `manifest.json`. It lists each file with its original path, size, modification time, Unix mode and BLAKE3 hash, which is the "before" hash. The file bodies follow as `files/000000`, `files/000001` and so on. Each file in the manifest also has a group number. A SQLite database and its `-wal` or `-journal` share a group, so recovery can identify which files belong together.
 
 The after-redaction hashes cannot go in the archive, because the archive is written before redaction starts. They go in the sidecar, which is encrypted with the same password. The archive itself does not change after it is verified.
 
-Windows writes archives and their sidecars beside the executable by default. It also lists existing backups from the local app data archive directory. On macOS and Linux, or when `NEURALYZER_DATA_DIR` is set, backups go in the data directory under `archives/`. On Unix, the folder uses mode `0700` and files use `0600`. `neuralyzer list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar and journal too. Archive files with names Neuralyzer didn't make are listed but never deleted.
+Windows writes archives and their sidecars beside the executable by default. It also lists existing backups from the local app data archive directory. On macOS and Linux, or when `NEURALYZER_DATA_DIR` is set, backups go in the data directory under `archives/`. On Unix, the folder uses mode `0700` and files use `0600`. `neuralyzer list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar, journal and undo directory too. Archive files with names Neuralyzer didn't make are listed but never deleted.
 
 ## Passwords
 
@@ -101,21 +102,13 @@ If step 6 or 7 fails, the redaction is already committed. The file is reported a
 
 ## What restore does
 
-`restore` with no name lists the backups, newest first, and in a terminal asks which one to restore. With a name, it accepts the full name, a unique prefix, or a path to an archive file. A prefix that matches more than one backup is refused, and the matches are listed. Restore takes the same run lock as `clean`.
+`restore` with no name lists backups and lets you choose one in a terminal. To select a backup directly, pass its full name, a unique prefix or the archive path.
 
-The steps are:
+`restore <NAME>` undoes edits in Copilot CLI `events.jsonl`. Each encrypted record stores the event ID, JSON field path, original string and exact replacement. Restore finds each event by its ID and checks the current string against the recorded replacement. If any check fails, it skips the session and prints the reason. If every edited string already holds its original bytes, the session is left unchanged.
 
-1. Read the password, decrypt the archive and read the manifest. A wrong password stops the restore here, before any file is written. The after-hashes come from the sidecar or, if the clean was interrupted, from its journal. Restore says when it used the journal.
-2. Decide what to do with each group of files (a database and its companions counts as one group):
-   - If every file already matches its "before" hash, nothing is restored.
-   - If a file in the group is locked or open in another process, the group is skipped, even with `--force`. Close the app and run restore again.
-   - If every file still matches its "after" hash, it has not changed since `clean`, so the group is restored without asking.
-   - If `clean` never wrote the group (it was skipped because it changed after the backup), the group is skipped. `--force` overwrites it.
-   - Otherwise a file in the group changed after cleaning. In a terminal, Neuralyzer asks once for the group. Without a terminal the group is skipped, and with `--force` it is overwritten.
-3. Write each restored file atomically, using the same method as `clean`. The file gets its original Unix mode and modification time.
-4. For a SQLite database, remove a stale `-shm` file. If the backup has no `-wal` or `-journal` for the database, remove the current one, because it would not match the restored file.
+Restore validates the edited JSONL, then checks that the live file still matches what it read before replacing it atomically. Event order, line endings and bytes outside the restored strings stay the same. Restore exits with 2 if it skips any session.
 
-Restore exits with 2 when it skipped any file, and the skipped files are listed. With `--force`, edits made after the clean are overwritten. Check the file list before you use `--force`.
+Use `restore <NAME> --into <FOLDER>` to recover full files from any archive, including older backups. The folder must be new. The original bytes go into numbered files under `files/`. Use the included `manifest.json` to match those files to their original paths. The command writes only inside the recovery folder.
 
 ## Reports
 

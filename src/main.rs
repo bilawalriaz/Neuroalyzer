@@ -104,13 +104,15 @@ enum Cmd {
         #[command(flatten)]
         pw: PwArgs,
     },
-    /// Put files back from a backup. With no name, lists the backups.
+    /// Undo Copilot CLI events.jsonl edits or recover files into a new folder.
+    #[command(after_help = "With no backup name, list backups or choose one in a terminal.
+Close Copilot CLI before undoing live edits. Use --into for older backups and other formats.")]
     Restore {
         /// Backup name (or a unique prefix) or path.
         archive: Option<String>,
-        /// Overwrite files that changed since they were cleaned, without asking.
-        #[arg(long)]
-        force: bool,
+        /// Recover original files into a new folder instead of undoing live edits.
+        #[arg(long, value_name = "FOLDER", requires = "archive")]
+        into: Option<std::path::PathBuf>,
         #[command(flatten)]
         pw: PwArgs,
     },
@@ -282,7 +284,7 @@ fn real_main(cli: Cli) -> anyhow::Result<i32> {
             let keep = keep.or(cfg.defaults.keep).unwrap_or(5);
             run::clean(&opts(common, &cfg, &cli, *min_age)?, &cfg, *yes, keep, pw)
         }
-        Cmd::Restore { archive, force, pw } => run::restore(archive.clone(), *force, pw, cli.quiet),
+        Cmd::Restore { archive, into, pw } => run::restore(archive.clone(), into.clone(), pw, cli.quiet),
         Cmd::Key {
             cmd: KeyCmd::Save { pw },
         } => neuralyzer::password::key_save(pw).map(|_| 0),

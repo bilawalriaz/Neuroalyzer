@@ -372,7 +372,11 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
                 group: g,
                 role: "main",
                 tool: job.tool.into(),
-                path: job.path.clone(),
+                path: if crate::undo::supported(job) {
+                    std::path::absolute(&job.path)?
+                } else {
+                    job.path.clone()
+                },
             });
             if job.format == Format::Sqlite {
                 for (suf, role) in [("-wal", "wal"), ("-journal", "journal")] {
@@ -394,15 +398,19 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
             .map(|m| m.len())
             .sum();
         let pb = bar(bytes, "backing up", opts.quiet);
-        let (apath, manifest) = backup::create(&sources, &pw, &dir, &pb)?;
+        let (apath, manifest, identity) = backup::create(&sources, &pw, &dir, &pb)?;
         pb.finish_and_clear();
         if !opts.quiet {
             eprintln!("Backup written and verified: {}", apath.display());
         }
-        // From here until the sidecar is written, after-hashes go to the
-        // journal before each file is replaced, so an interrupted run can
-        // still be restored without --force.
+        // Keep the existing after-hash journal for archive metadata.
+        // Copilot live restore uses separate edit records and commit evidence.
         let journal = backup::Journal::create(&apath)?;
+        let undo = crate::undo::Run {
+            archive: &apath,
+            id: &manifest.run_id,
+            identity: &identity,
+        };
         // Redact.
         let after = Mutex::new(BTreeMap::<String, Option<String>>::new());
         let pb = bar(
@@ -416,7 +424,12 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
             .map(|(g, &i)| {
                 let job = &p.jobs[i];
                 let group: Vec<&backup::Entry> = manifest.entries.iter().filter(|e| e.group == g).collect();
-                let r = redact_group(&p.engine, job, &group, &journal).map(|(o, hashes)| {
+                let result = if crate::undo::supported(job) {
+                    redact_copilot(&p.engine, job, &group, &journal, &undo)
+                } else {
+                    redact_group(&p.engine, job, &group, &journal)
+                };
+                let r = result.map(|(o, hashes)| {
                     after.lock().unwrap().extend(hashes);
                     o
                 });
@@ -444,9 +457,9 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
             Ok(()) => journal.remove(),
             Err(e) => {
                 // The files are already redacted, so carry on and report them.
-                // The journal stays, and restore falls back to it.
+                // The journal retains the hashes.
                 eprintln!(
-                    "error: couldn't write the backup's after-hashes ({e:#}). Restore will use {} instead.",
+                    "error: couldn't write the backup's after-hashes ({e:#}). The journal is at {}.",
                     backup::journal_path(&apath).display()
                 );
                 exit = 2;
@@ -459,6 +472,9 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
                     reports.insert(i, file_report(job, &o, o.would_change, None));
                 }
                 Err(reason) => {
+                    if crate::undo::supported(job) {
+                        exit = 2;
+                    }
                     let mut fr = reports.remove(&i).unwrap();
                     fr.skipped = Some(reason);
                     reports.insert(i, fr);
@@ -484,6 +500,24 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
 
 /// Backup entry id -> hash of what clean wrote (None: the file is gone).
 type AfterHashes = Vec<(String, Option<String>)>;
+
+fn redact_copilot(
+    engine: &Engine,
+    job: &Job,
+    group: &[&backup::Entry],
+    journal: &backup::Journal,
+    undo: &crate::undo::Run<'_>,
+) -> std::result::Result<(Outcome, AfterHashes), String> {
+    let entry = group.iter().find(|e| e.role == "main").ok_or("no backup entry")?;
+    if let Some(reason) = fsutil::lock_reason(&job.path) {
+        return Err(reason);
+    }
+    let result = undo.clean(job, entry, engine, journal).map_err(|e| format!("{e:#}"))?;
+    match result {
+        Some((outcome, hash)) => Ok((outcome, hash.into_iter().map(|h| (entry.id.clone(), Some(h))).collect())),
+        None => Err("changed after backup; left as is".into()),
+    }
+}
 
 /// The write step for one candidate and its SQLite companions.
 ///
@@ -715,7 +749,7 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
     Ok(0)
 }
 
-pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bool) -> Result<i32> {
+pub fn restore(archive: Option<String>, into: Option<PathBuf>, pw_args: &PwArgs, quiet: bool) -> Result<i32> {
     let dir = crate::paths::archives_dir()?;
     let list = available_archives(&dir)?;
     let name = match archive {
@@ -756,43 +790,26 @@ pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bo
             }
         }
     };
-    let path = resolve_archive(&name, &list)?;
     let _lock = crate::paths::lock_data_dir()?;
+    let _archive_lock = crate::paths::lock_portable_archives()?;
+    let path = resolve_archive(&name, &list)?;
     let pw = password::resolve(pw_args, Purpose::Restore, quiet)?;
-    let interactive = std::io::stdin().is_terminal();
-    let pb = bar(0, "restoring", quiet);
-    let out = backup::restore(
-        &path,
-        &pw,
-        force,
-        |e| {
-            if !interactive {
-                return false;
-            }
-            pb.suspend(|| {
-                confirm(&format!(
-                    "{} changed since it was cleaned. Overwrite it with the backup?",
-                    e.path
-                ))
-                .unwrap_or(false)
-            })
-        },
-        &pb,
-    )?;
-    pb.finish_and_clear();
-    if !quiet {
-        if out.after_source == Some(backup::AfterSource::Journal) {
-            eprintln!(
-                "note: the clean that made this backup was interrupted; used its recovery journal to tell which files it changed."
-            );
+    if let Some(destination) = into {
+        let count = backup::recover(&path, &pw, &destination)?;
+        if !quiet {
+            eprintln!("Recovered {count} file(s) into {}.", destination.display());
         }
+        return Ok(0);
+    }
+    let out = crate::undo::restore(&path, &pw)?;
+    if !quiet {
         eprintln!("Restored {} file(s) from {}.", out.restored.len(), path.display());
         if !out.unchanged.is_empty() {
-            eprintln!("{} file(s) already matched the backup.", out.unchanged.len());
+            eprintln!("{} file(s) had no edits to undo.", out.unchanged.len());
         }
-        for (p, r) in &out.skipped {
-            eprintln!("skipped {p}: {r}");
-        }
+    }
+    for (p, r) in &out.skipped {
+        eprintln!("skipped {p}: {r}");
     }
     Ok(if out.skipped.is_empty() { 0 } else { 2 })
 }

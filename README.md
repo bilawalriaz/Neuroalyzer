@@ -4,7 +4,7 @@
 
 <img src="assets/neuralyzer.png" alt="Agent J holding the neuralyzer in Men in Black" width="640">
 
-Neuralyzer finds and redacts secrets and personal data in local AI coding sessions. It makes an encrypted backup before editing session files. Use `restore` to put the original files back.
+Neuralyzer finds and redacts secrets and personal data in local AI coding sessions. It makes an encrypted backup before editing session files. Use `restore` to undo Copilot CLI edits or recover original files into a new folder.
 
 Supports Claude Code, Codex CLI, Gemini CLI, GitHub Copilot for VS Code and CLI, OpenCode, Hermes Agent, OpenClaw, Factory Droid, pi and oh-my-pi. [Supported files and locations](docs/FORMATS.md)
 
@@ -32,10 +32,19 @@ The binary is in `target/release/`. To build without ONNX Runtime or experimenta
 neuralyzer list                # Show detected sessions and existing backups
 neuralyzer scan                # Preview findings without editing session files
 neuralyzer clean               # Back up and redact matching files
-neuralyzer restore             # Choose a backup to restore
+neuralyzer restore             # List backups or choose one in a terminal
 ```
 
-Close your agents before running `clean`. It skips files modified in the last 120 seconds and asks for a backup password and confirmation. Use `neuralyzer restore <NAME>` to restore a specific backup. [Backup and restore behaviour](docs/SAFETY.md)
+Close your agents before running `clean` or `restore`. Clean skips files modified in the last 120 seconds and asks for a backup password and confirmation.
+
+```sh
+neuralyzer restore <NAME>                      # Undo one clean in Copilot CLI events.jsonl
+neuralyzer restore <NAME> --into ./recovered    # Recover original files from any backup
+```
+
+Live restore keeps messages added after the clean. If a field changed again or an event cannot be identified, Neuralyzer skips that session and prints the reason. If a newer clean changed the same field, undo the newer clean first.
+
+Use `--into` for older backups or other file formats. Choose a folder that does not exist yet. The recovered files are numbered under `files/`, and `manifest.json` maps each one to its original path. [Backup and restore behaviour](docs/SAFETY.md)
 
 Neuralyzer detects secrets such as API keys, tokens and passwords, plus personal data such as emails, phone numbers and payment card numbers. It replaces matches with tokens such as `[EMAIL:3f9a1c2e]`. Reports include counts, types and file paths.
 
