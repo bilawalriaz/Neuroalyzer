@@ -10,7 +10,7 @@ use crate::password::{self, Purpose, PwArgs};
 use crate::report::{self, Engines, FileReport, Report};
 use crate::sqlite::{self, SqlResult};
 use crate::token::Tokenizer;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -185,7 +185,7 @@ fn emit(report: &Report, opts: &ScanOpts, notes: &[String]) -> Result<()> {
     if opts.json {
         println!("{}", serde_json::to_string_pretty(report)?);
     } else {
-        let (j, m) = report.write_files(&crate::paths::reports_dir())?;
+        let (j, m) = report.write_files(&crate::paths::reports_dir()?)?;
         if !opts.quiet {
             eprintln!("\n  Report          {}\n                  {}", j.display(), m.display());
         }
@@ -354,6 +354,12 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
         if !yes && !confirm(&format!("Back up and redact {} file(s)?", candidates.len()))? {
             eprintln!("Nothing changed.");
             return Ok(0);
+        }
+        if !opts.json {
+            let dir = crate::paths::reports_dir()?;
+            crate::paths::ensure_private_dir(&dir)?;
+            tempfile::NamedTempFile::new_in(&dir)
+                .with_context(|| format!("couldn't write reports to {}", dir.display()))?;
         }
         let pw = password::resolve(pw_args, Purpose::Clean, opts.quiet)?;
         // Build backup sources: each file plus SQLite companions.

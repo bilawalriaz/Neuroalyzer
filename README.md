@@ -50,7 +50,7 @@ Neuralyzer detects secrets such as API keys, tokens and passwords, plus personal
 | `-j half scan` | Use half the logical CPUs. Also accepts a thread count, `max` or `p-cores`. |
 | `--low-priority scan` | Run the scan at lower OS scheduling priority. |
 
-Use `neuralyzer <command> --help` for command options. `scan` exits with 0 for no findings, 1 for findings and 2 for an error. Set `NEURALYZER_DATA_DIR` to put backups and reports in a separate directory when testing on a copy. [Configuration reference](docs/CONFIG.md)
+Use `neuralyzer <command> --help` for command options. `scan` exits with 0 for no findings, 1 for findings and 2 for an error. On Windows, JSON and Markdown reports go beside `neuralyzer.exe` by default. Set `NEURALYZER_DATA_DIR` to put backups and reports under a separate directory when testing on a copy. [Configuration reference](docs/CONFIG.md)
 
 ## Experimental NER
 
