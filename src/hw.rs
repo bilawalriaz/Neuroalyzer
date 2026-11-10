@@ -98,6 +98,7 @@ mod imp {
     use super::Cores;
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs::read_to_string;
+    use std::path::Path;
 
     /// Parse a CPU list like "0-3,8,10-11".
     pub(super) fn cpu_list(s: &str) -> Vec<usize> {
@@ -115,27 +116,32 @@ mod imp {
         out
     }
 
-    fn read_num(p: String) -> Option<u64> {
+    fn read_num(p: impl AsRef<Path>) -> Option<u64> {
         read_to_string(p).ok()?.trim().parse().ok()
     }
 
     pub fn detect(logical: usize) -> Option<Cores> {
-        let online = cpu_list(&read_to_string("/sys/devices/system/cpu/online").ok()?);
+        detect_from(Path::new("/sys/devices"), logical)
+    }
+
+    fn detect_from(devices: &Path, logical: usize) -> Option<Cores> {
+        let cpu_root = devices.join("system/cpu");
+        let online = cpu_list(&read_to_string(cpu_root.join("online")).ok()?);
         if online.is_empty() {
             return None;
         }
         // Physical core of each logical CPU, so SMT siblings count once.
         let core_of = |cpu: usize| -> (u64, u64) {
-            let t = format!("/sys/devices/system/cpu/cpu{cpu}/topology");
+            let t = cpu_root.join(format!("cpu{cpu}/topology"));
             (
-                read_num(format!("{t}/physical_package_id")).unwrap_or(0),
-                read_num(format!("{t}/core_id")).unwrap_or(cpu as u64),
+                read_num(t.join("physical_package_id")).unwrap_or(0),
+                read_num(t.join("core_id")).unwrap_or(cpu as u64),
             )
         };
         // Intel hybrid exposes the two PMUs with their CPU lists.
         let class: BTreeMap<usize, bool> = if let (Ok(p), Ok(e)) = (
-            read_to_string("/sys/devices/cpu_core/cpus"),
-            read_to_string("/sys/devices/cpu_atom/cpus"),
+            read_to_string(devices.join("cpu_core/cpus")),
+            read_to_string(devices.join("cpu_atom/cpus")),
         ) {
             let mut m: BTreeMap<usize, bool> = cpu_list(&p).into_iter().map(|c| (c, true)).collect();
             m.extend(cpu_list(&e).into_iter().map(|c| (c, false)));
@@ -144,8 +150,8 @@ mod imp {
             // ARM big.LITTLE: cpu_capacity (or max frequency) per CPU; the top
             // tier is "performance".
             let score = |cpu: usize| {
-                read_num(format!("/sys/devices/system/cpu/cpu{cpu}/cpu_capacity"))
-                    .or_else(|| read_num(format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/cpuinfo_max_freq")))
+                let cpu = cpu_root.join(format!("cpu{cpu}"));
+                read_num(cpu.join("cpu_capacity")).or_else(|| read_num(cpu.join("cpufreq/cpuinfo_max_freq")))
             };
             let scores: Vec<(usize, Option<u64>)> = online.iter().map(|&c| (c, score(c))).collect();
             let top = scores.iter().filter_map(|s| s.1).max();
@@ -179,6 +185,85 @@ mod imp {
             eff: eff.len(),
         })
     }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn detect_fixture(logical: usize, files: &[(&str, &str)]) -> Cores {
+            let root = tempfile::tempdir().unwrap();
+            for (name, contents) in files {
+                let path = root.path().join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, contents).unwrap();
+            }
+            detect_from(root.path(), logical).unwrap()
+        }
+
+        #[test]
+        fn intel_hybrid_counts_smt_once_and_skips_offline_cpus() {
+            let cores = detect_fixture(
+                3,
+                &[
+                    ("system/cpu/online", "0-2"),
+                    ("cpu_core/cpus", "0-1"),
+                    ("cpu_atom/cpus", "2-3"),
+                    ("system/cpu/cpu0/topology/core_id", "0"),
+                    ("system/cpu/cpu1/topology/core_id", "0"),
+                    ("system/cpu/cpu2/topology/core_id", "1"),
+                    ("system/cpu/cpu3/topology/core_id", "2"),
+                ],
+            );
+            assert_eq!(
+                cores,
+                Cores {
+                    logical: 3,
+                    perf: 1,
+                    eff: 1
+                }
+            );
+        }
+
+        #[test]
+        fn arm_capacity_tiers_with_missing_topology() {
+            let cores = detect_fixture(
+                3,
+                &[
+                    ("system/cpu/online", "0-2"),
+                    ("system/cpu/cpu0/cpu_capacity", "1024"),
+                    ("system/cpu/cpu1/cpu_capacity", "1000"),
+                    ("system/cpu/cpu2/cpu_capacity", "600"),
+                ],
+            );
+            assert_eq!(
+                cores,
+                Cores {
+                    logical: 3,
+                    perf: 2,
+                    eff: 1
+                }
+            );
+        }
+
+        #[test]
+        fn similar_max_frequencies_count_as_one_tier() {
+            let cores = detect_fixture(
+                2,
+                &[
+                    ("system/cpu/online", "0-1"),
+                    ("system/cpu/cpu0/cpufreq/cpuinfo_max_freq", "3300000"),
+                    ("system/cpu/cpu1/cpufreq/cpuinfo_max_freq", "3200000"),
+                ],
+            );
+            assert_eq!(
+                cores,
+                Cores {
+                    logical: 2,
+                    perf: 2,
+                    eff: 0
+                }
+            );
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -200,8 +285,12 @@ mod imp {
         if ok == 0 {
             return None;
         }
+        parse_cpu_sets(buf.get(..len as usize)?, logical)
+    }
+
+    fn parse_cpu_sets(buf: &[u8], logical: usize) -> Option<Cores> {
         // EfficiencyClass: higher is faster. Count physical cores per class.
-        let mut classes: BTreeMap<u8, BTreeSet<(u8, u8)>> = BTreeMap::new();
+        let mut classes: BTreeMap<u8, BTreeSet<(u16, u8)>> = BTreeMap::new();
         let mut off = 0usize;
         while off + 8 <= buf.len() {
             // SAFETY: entries are laid out back to back, each starting with
@@ -221,7 +310,7 @@ mod imp {
                 classes
                     .entry(cs.EfficiencyClass)
                     .or_default()
-                    .insert((cs.Group as u8, cs.CoreIndex));
+                    .insert((cs.Group, cs.CoreIndex));
             }
             off += e.Size as usize;
         }
@@ -229,6 +318,27 @@ mod imp {
         let perf = classes[&top].len();
         let eff = classes.iter().filter(|(k, _)| **k != top).map(|(_, v)| v.len()).sum();
         Some(Cores { logical, perf, eff })
+    }
+    #[test]
+    fn cpu_sets_distinguish_groups_and_count_smt_once() {
+        let mut buf = Vec::new();
+        let size = std::mem::size_of::<SYSTEM_CPU_SET_INFORMATION>();
+        for (group, core, efficiency) in [(0u16, 0, 1), (0, 0, 1), (256, 0, 1), (0, 1, 0)] {
+            let mut entry = vec![0; size];
+            entry[..4].copy_from_slice(&(size as u32).to_le_bytes());
+            entry[12..14].copy_from_slice(&group.to_le_bytes());
+            entry[15] = core;
+            entry[18] = efficiency;
+            buf.extend(entry);
+        }
+        assert_eq!(
+            parse_cpu_sets(&buf, 4),
+            Some(Cores {
+                logical: 4,
+                perf: 2,
+                eff: 1
+            })
+        );
     }
 }
 

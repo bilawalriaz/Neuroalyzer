@@ -26,8 +26,8 @@ This example lists every key. Delete the ones you do not need.
 only = ["copilot", "opencode", "omp"]
 # Extra files or directories to scan, as with --also.
 also = ["/Users/me/notes"]
-# Run the NER model. Only has an effect in builds with the ner feature.
-ner = true
+# Set to true to enable experimental NER in builds with the ner feature.
+ner = false
 # Number of backups to keep.
 keep = 5
 # CPU threads for scanning, as with -j: a number, "max", "half" or "p-cores".
@@ -78,7 +78,7 @@ Write regexes as TOML literal strings (single quotes), so backslashes need no es
 |---|---|---|---|---|
 | `[defaults]` | `only` | list of strings | all tools | Used when `--only` is not given. The flag replaces the list. |
 | `[defaults]` | `also` | list of paths | empty | Added to any `--also` paths. |
-| `[defaults]` | `ner` | boolean | `true` in default builds | `--ner` and `--no-ner` override it. |
+| `[defaults]` | `ner` | boolean | `false` | Set to `true` to enable experimental NER. `--ner` and `--no-ner` override it. |
 | `[defaults]` | `keep` | integer | `5` | `--keep` overrides it. Values below 1 keep one backup. |
 | `[defaults]` | `threads` | string | `auto` (every logical CPU) | Scan threads: a number, `max`, `half` or `p-cores`. `-j` and `NEURALYZER_THREADS` override it. |
 | `[defaults]` | `low_priority` | boolean | `false` | Background QoS on macOS, nice 10 on Linux, below-normal on Windows. `--low-priority` and `NEURALYZER_LOW_PRIORITY` override it. |

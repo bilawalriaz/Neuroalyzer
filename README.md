@@ -94,7 +94,7 @@ Flags for `scan` and `clean`:
 | `--only claude,codex,...` | Only the listed tools: `copilot`, `opencode`, `omp`, `claude`, `codex`, `gemini`, `hermes`, `openclaw`, `droid`, `pi`. |
 | `--root DIR` | Look for session data under DIR instead of your home directory. Use it to test on a copy. |
 | `--also PATH` | Also scan a file or directory. Repeatable. |
-| `--ner` / `--no-ner` | Turn the NER model on or off for this run. |
+| `--ner` / `--no-ner` | Enable or disable experimental NER. Off by default. |
 | `--json` | Print the report as JSON on stdout instead of writing report files. |
 | `--ner-sessions N` | Parallel NER workers. Default: one per physical core. |
 | `--ner-threads N` | Threads per NER worker. Default: 1. |
@@ -150,7 +150,7 @@ Personal data is matched by pattern and then checked by a validator. A match tha
 
 In a table where a column is mostly emails or phones, every cell in that row is redacted except numeric IDs, dates, booleans and enum-like values. Tables can be CSV, TSV, Markdown, SQL client output or JSON arrays of objects.
 
-NER uses the GLiNER model `knowledgator/gliner-pii-base-v1.0` (Apache-2.0, quantised ONNX, about 205 MB). It is on by default in builds that include it. The model downloads on the first run that uses it (pass `--no-ner` to skip it) into the `models` folder in the data directory, and its SHA-256 is checked. After that, it runs offline. Only prose is sent to the model: user messages, assistant text and tool output. Code blocks and code-looking text are skipped. If the model cannot load, the run continues without it, and the report says so. NER is English-centric.
+NER uses the GLiNER model `knowledgator/gliner-pii-base-v1.0` (Apache-2.0, quantised ONNX, about 205 MB). The model downloads on the first run with NER enabled into the `models` folder in the data directory, and its SHA-256 is checked. After that, it runs offline. Only prose is sent to the model: user messages, assistant text and tool output. Code blocks and code-looking text are skipped. If the model cannot load, the run continues without it, and the report says so. NER is English-centric.
 
 Each redacted value becomes a token such as `[EMAIL:3f9a1c2e]`. The eight hex characters are the start of an HMAC-SHA256 of the value, keyed with a random key stored as `hmac.key` in the data directory. The same value gets the same token on one machine, and the token cannot be reversed.
 
@@ -253,9 +253,9 @@ NEURALYZER_TEST_MODEL_DIR=/some/dir cargo test --release --test ner
 
 ## Speed
 
-Without NER, scanning spreads over every core, with the biggest files started first, and the PII patterns stay on the fast regex engine even for non-ASCII text. On an M3 Pro, `scan --no-ner` reads 6.1 GB of real agent sessions in about 39 seconds (151 MB/s).
+Without NER, scanning spreads over every core, with the biggest files started first, and the PII patterns stay on the fast regex engine even for non-ASCII text. On an M3 Pro, `scan` reads 6.1 GB of real agent sessions in about 39 seconds (151 MB/s).
 
-NER is experimental and far slower. It runs a transformer on every unique chunk of prose, once per run: all files are read first, chunks are deduplicated across the whole corpus, and the unique ones go to a pool of model workers (one per physical core by default). The same M3 Pro does about 60 chunks per second, so a large first run takes hours. `-v` prints how many unique chunks a run has to infer. Use `--no-ner` for fast runs, and `--low-priority` for a long NER run in the background. [docs/NER_PERFORMANCE.md](docs/NER_PERFORMANCE.md) has the measurements and what is left to speed up.
+NER is experimental and off by default. Use `neuralyzer scan --ner` or `neuralyzer clean --ner` to enable it for one run. Set `ner = true` under `[defaults]` in the config to enable it for future runs. Each run reads all files, deduplicates the prose chunks, and sends the unique chunks to the model. The default is one model worker per physical core. The same M3 Pro does about 60 chunks per second, so a large first run takes hours. `-v` prints how many unique chunks a run has to infer. Use `--low-priority` for a long NER run in the background. [docs/NER_PERFORMANCE.md](docs/NER_PERFORMANCE.md) has the measurements and what is left to speed up.
 
 To see the numbers for your own data, time `neuralyzer scan --root` on a copy (see "Testing on a copy"), or run `bench/bench.py`, which also records CPU use, peak memory and NER chunk rates.
 
