@@ -63,6 +63,9 @@ libc = "0.2.191"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
+[build-dependencies]
+embed-resource = "3.0.12"
+
 [dev-dependencies]
 regex-syntax = "0.8"
 fixturegen = { path = "crates/fixturegen" }
