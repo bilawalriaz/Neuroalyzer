@@ -184,43 +184,70 @@ impl Engine {
         out
     }
 
-    fn redact_jsonl(&self, raw: &[u8], counts: &mut Counts, drift: &mut bool) -> Option<Vec<u8>> {
-        let mut out: Option<Vec<u8>> = None;
-        let mut off = 0;
-        for line in raw.split_inclusive(|&b| b == b'\n') {
-            let body_len = line.len() - line.iter().rev().take_while(|&&b| b == b'\n' || b == b'\r').count();
-            let body = &line[..body_len];
-            let mut changed: Option<Vec<u8>> = None;
-            if !body.iter().all(u8::is_ascii_whitespace) && (self.ner.is_some() || self.det.record_may_match(body)) {
-                match self.redact_json(body, counts) {
-                    Ok(Some(new)) => changed = Some(new),
-                    Ok(None) => {}
-                    Err(()) => {
-                        *drift = true;
-                        if let Ok(l) = std::str::from_utf8(body) {
-                            changed = self.redact_str(l, "", counts).map(String::into_bytes);
-                        }
-                    }
-                }
-            }
-            match (changed, &mut out) {
-                (Some(new), None) => {
-                    let mut v = Vec::with_capacity(raw.len());
-                    v.extend_from_slice(&raw[..off]);
-                    v.extend_from_slice(&new);
-                    v.extend_from_slice(&line[body_len..]);
-                    out = Some(v);
-                }
-                (Some(new), Some(v)) => {
-                    v.extend_from_slice(&new);
-                    v.extend_from_slice(&line[body_len..]);
-                }
-                (None, Some(v)) => v.extend_from_slice(line),
-                (None, None) => {}
-            }
-            off += line.len();
+    /// Redact one JSONL line body (no line terminator). Returns the new body if it changed.
+    fn redact_jsonl_line(&self, body: &[u8], counts: &mut Counts, drift: &mut bool) -> Option<Vec<u8>> {
+        if body.iter().all(u8::is_ascii_whitespace) || !(self.ner.is_some() || self.det.record_may_match(body)) {
+            return None;
         }
-        out
+        match self.redact_json(body, counts) {
+            Ok(v) => v,
+            Err(()) => {
+                *drift = true;
+                std::str::from_utf8(body)
+                    .ok()
+                    .and_then(|l| self.redact_str(l, "", counts))
+                    .map(String::into_bytes)
+            }
+        }
+    }
+
+    fn redact_jsonl(&self, raw: &[u8], counts: &mut Counts, drift: &mut bool) -> Option<Vec<u8>> {
+        // Agents keep whole projects in one session file; decompressed Codex
+        // rollouts reach hundreds of megabytes. Lines are independent, so big
+        // files are split across threads and reassembled in order.
+        const PARALLEL_JSONL: usize = 8 << 20;
+        let lines: Vec<&[u8]> = raw.split_inclusive(|&b| b == b'\n').collect();
+        let body_len = |line: &[u8]| line.len() - line.iter().rev().take_while(|&&b| b == b'\n' || b == b'\r').count();
+        let changed: Vec<Option<Vec<u8>>> = if raw.len() >= PARALLEL_JSONL && lines.len() > 1 {
+            use rayon::prelude::*;
+            let parts: Vec<(Option<Vec<u8>>, Counts, bool)> = lines
+                .par_iter()
+                .with_min_len(16)
+                .map(|line| {
+                    let (mut c, mut d) = (Counts::new(), false);
+                    let r = self.redact_jsonl_line(&line[..body_len(line)], &mut c, &mut d);
+                    (r, c, d)
+                })
+                .collect();
+            parts
+                .into_iter()
+                .map(|(r, c, d)| {
+                    add_counts(counts, &c);
+                    *drift |= d;
+                    r
+                })
+                .collect()
+        } else {
+            lines
+                .iter()
+                .map(|line| self.redact_jsonl_line(&line[..body_len(line)], counts, drift))
+                .collect()
+        };
+        let first = changed.iter().position(Option::is_some)?;
+        let mut out = Vec::with_capacity(raw.len());
+        for line in &lines[..first] {
+            out.extend_from_slice(line);
+        }
+        for (line, new) in lines[first..].iter().zip(&changed[first..]) {
+            match new {
+                Some(new) => {
+                    out.extend_from_slice(new);
+                    out.extend_from_slice(&line[body_len(line)..]);
+                }
+                None => out.extend_from_slice(line),
+            }
+        }
+        Some(out)
     }
 
     /// Feed NER every prose string in the file first, so inference is batched.
@@ -246,8 +273,20 @@ impl Engine {
 
     /// Process a JSON, JSONL or text file held in memory.
     pub fn process_bytes(&self, job: &Job, raw: &[u8]) -> Outcome {
+        self.process(job, raw, true)
+    }
+
+    /// Like `process_bytes`, for a read-only scan: findings and `would_change`
+    /// only. Skips building output that would be thrown away (zstd recompression).
+    pub fn analyse_bytes(&self, job: &Job, raw: &[u8]) -> Outcome {
+        let mut o = self.process(job, raw, false);
+        o.new_bytes = None;
+        o
+    }
+
+    fn process(&self, job: &Job, raw: &[u8], keep_bytes: bool) -> Outcome {
         if job.format == Format::JsonlZst {
-            return self.process_zst(job, raw);
+            return self.process_zst(job, raw, keep_bytes);
         }
         let mut o = Outcome {
             bytes: raw.len() as u64,
@@ -298,7 +337,7 @@ impl Engine {
 impl Engine {
     /// Decompress, redact as JSONL, recompress. A file that won't decompress
     /// is reported and left alone.
-    fn process_zst(&self, job: &Job, raw: &[u8]) -> Outcome {
+    fn process_zst(&self, job: &Job, raw: &[u8], keep_bytes: bool) -> Outcome {
         let plain = match zstd::stream::decode_all(raw) {
             Ok(p) => p,
             Err(e) => {
@@ -313,8 +352,11 @@ impl Engine {
             format: Format::Jsonl,
             ..job.clone()
         };
-        let mut o = self.process_bytes(&inner, &plain);
+        let mut o = self.process(&inner, &plain, keep_bytes);
         o.bytes = raw.len() as u64;
+        if !keep_bytes {
+            return o;
+        }
         if let Some(nb) = o.new_bytes.take() {
             match zstd::stream::encode_all(&nb[..], 3) {
                 Ok(c) => o.new_bytes = Some(c),
@@ -359,5 +401,56 @@ fn schema_drift(schema: Schema, raw: &[u8], format: Format) -> Option<String> {
             "didn't match the expected {} layout; scanned it generically",
             schema.name()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine() -> Engine {
+        Engine {
+            det: crate::detect::Detectors::new(&crate::config::Config::default(), &[]).unwrap(),
+            tok: crate::token::Tokenizer::ephemeral(),
+            ner: None,
+        }
+    }
+
+    /// Big files take the parallel path; the result must match the serial one
+    /// byte for byte, including line endings, blank lines and non-JSON lines.
+    #[test]
+    fn parallel_jsonl_matches_serial() {
+        let e = engine();
+        let mut line = 0u32;
+        let mut raw: Vec<u8> = vec![];
+        while raw.len() < (9 << 20) {
+            line += 1;
+            let rec = match line % 5 {
+                0 => format!("{{\"n\":{line},\"text\":\"mail ops{line}@example.com now\"}}\r\n"),
+                1 => "\n".to_string(),
+                2 => format!("not json {line} ops{line}@example.com\n"),
+                _ => format!("{{\"n\":{line},\"text\":\"{}\"}}\n", "plain words ".repeat(40)),
+            };
+            raw.extend_from_slice(rec.as_bytes());
+        }
+        raw.extend_from_slice(b"{\"tail\":\"no newline ops@example.com\"}");
+        let (mut pc, mut sc) = (Counts::new(), Counts::new());
+        let (mut pd, mut sd) = (false, false);
+        let par = e.redact_jsonl(&raw, &mut pc, &mut pd).expect("something to redact");
+        let mut ser: Vec<u8> = vec![];
+        for l in raw.split_inclusive(|&b| b == b'\n') {
+            let blen = l.len() - l.iter().rev().take_while(|&&b| b == b'\n' || b == b'\r').count();
+            match e.redact_jsonl_line(&l[..blen], &mut sc, &mut sd) {
+                Some(n) => {
+                    ser.extend_from_slice(&n);
+                    ser.extend_from_slice(&l[blen..]);
+                }
+                None => ser.extend_from_slice(l),
+            }
+        }
+        assert_eq!(par, ser);
+        assert_eq!(pc, sc);
+        assert_eq!(pd, sd);
+        assert!(pd, "non-JSON lines count as drift");
     }
 }

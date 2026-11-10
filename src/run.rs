@@ -150,11 +150,7 @@ fn analyse(engine: &Engine, job: &Job, min_age: Option<Duration>) -> std::result
             Err(e) => Err(format!("error: {e:#}")),
         },
         _ => match fsutil::read(&job.path) {
-            Ok(b) => {
-                let mut o = engine.process_bytes(job, &b);
-                o.new_bytes = None;
-                Ok(o)
-            }
+            Ok(b) => Ok(engine.analyse_bytes(job, &b)),
             Err(e) => Err(format!("error: {e:#}")),
         },
     }
@@ -186,24 +182,55 @@ fn emit(report: &Report, opts: &ScanOpts, notes: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Rough work estimate for scheduling: zstd files are scanned decompressed.
+fn job_cost(job: &Job) -> u64 {
+    match job.format {
+        Format::JsonlZst => job.size.saturating_mul(8),
+        _ => job.size,
+    }
+}
+
+/// Run `f` over every job on the rayon pool, biggest first, and return the
+/// results in job order. A huge file started last leaves one core busy while
+/// the rest idle; started first, it overlaps with everything else.
+fn map_jobs<T: Send>(jobs: &[Job], f: impl Fn(&Job) -> T + Sync) -> Vec<T> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut order: Vec<usize> = (0..jobs.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(job_cost(&jobs[i])));
+    let slots: Vec<Mutex<Option<T>>> = jobs.iter().map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    rayon::scope(|s| {
+        for _ in 0..rayon::current_num_threads().min(jobs.len()) {
+            s.spawn(|_| {
+                loop {
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&i) = order.get(k) else { break };
+                    let r = f(&jobs[i]);
+                    *slots[i].lock().unwrap() = Some(r);
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|m| m.into_inner().unwrap().expect("every job ran"))
+        .collect()
+}
+
 pub fn scan(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
     let started = chrono::Local::now();
     let t0 = Instant::now();
     let p = prepare(opts, cfg, false)?;
     let total: u64 = p.jobs.iter().map(|j| j.size).sum();
     let pb = bar(total, "scanning", opts.quiet);
-    let results: Vec<(String, FileReport)> = p
-        .jobs
-        .par_iter()
-        .map(|job| {
-            let r = match analyse(&p.engine, job, None) {
-                Ok(o) => file_report(job, &o, false, None),
-                Err(reason) => file_report(job, &Outcome::default(), false, Some(reason)),
-            };
-            pb.inc(job.size);
-            (job.tool.to_string(), r)
-        })
-        .collect();
+    let results: Vec<(String, FileReport)> = map_jobs(&p.jobs, |job| {
+        let r = match analyse(&p.engine, job, None) {
+            Ok(o) => file_report(job, &o, false, None),
+            Err(reason) => file_report(job, &Outcome::default(), false, Some(reason)),
+        };
+        pb.inc(job.size);
+        (job.tool.to_string(), r)
+    });
     pb.finish_and_clear();
     let mut engines = p.engines.clone();
     ner_stats(&p, &mut engines);
@@ -231,16 +258,14 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
     let min_age = Duration::from_secs(opts.min_age);
     let total: u64 = p.jobs.iter().map(|j| j.size).sum();
     let pb = bar(total, "scanning", opts.quiet);
-    let first: Vec<(usize, std::result::Result<Outcome, String>)> = p
-        .jobs
-        .par_iter()
-        .enumerate()
-        .map(|(i, job)| {
-            let r = analyse(&p.engine, job, Some(min_age));
-            pb.inc(job.size);
-            (i, r)
-        })
-        .collect();
+    let first: Vec<(usize, std::result::Result<Outcome, String>)> = map_jobs(&p.jobs, |job| {
+        let r = analyse(&p.engine, job, Some(min_age));
+        pb.inc(job.size);
+        r
+    })
+    .into_iter()
+    .enumerate()
+    .collect();
     pb.finish_and_clear();
 
     let mut reports: BTreeMap<usize, FileReport> = BTreeMap::new();
