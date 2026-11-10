@@ -6,6 +6,20 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Environment variable `<PKG>_<suffix>` for this binary, e.g. `env_name("THREADS")`.
+/// Derived from the package name so new variables follow a rename.
+pub fn env_name(suffix: &str) -> String {
+    format!(
+        "{}_{suffix}",
+        env!("CARGO_PKG_NAME").to_ascii_uppercase().replace('-', "_")
+    )
+}
+
+/// Value of `<PKG>_<suffix>`, if set and not empty.
+pub fn env_value(suffix: &str) -> Option<String> {
+    std::env::var(env_name(suffix)).ok().filter(|v| !v.trim().is_empty())
+}
+
 pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("NEUROALYZER_DATA_DIR") {
         return PathBuf::from(p);

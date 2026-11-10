@@ -1930,6 +1930,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "neuroalyzer"
+version = "2.1.0"
+dependencies = [
+ "age",
+ "aho-corasick",
+ "anyhow",
+ "blake3",
+ "chrono",
+ "clap",
+ "composable",
+ "console 0.16.6",
+ "dirs 7.0.0",
+ "fixturegen",
+ "gline-rs",
+ "glob",
+ "hex",
+ "hmac 0.13.0",
+ "indicatif 0.18.6",
+ "keyring",
+ "libc",
+ "memmap2",
+ "orp",
+ "ort",
+ "rand 0.10.3",
+ "rayon",
+ "regex",
+ "regex-syntax",
+ "rpassword",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tar",
+ "tempfile",
+ "toml 1.2.1+spec-1.1.0",
+ "ureq 3.5.1",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2808,44 +2851,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "neuroalyzer"
-version = "2.0.0"
-dependencies = [
- "age",
- "aho-corasick",
- "anyhow",
- "blake3",
- "chrono",
- "clap",
- "console 0.16.6",
- "dirs 7.0.0",
- "fixturegen",
- "gline-rs",
- "glob",
- "hex",
- "hmac 0.13.0",
- "indicatif 0.18.6",
- "keyring",
- "memmap2",
- "orp",
- "rand 0.10.3",
- "rayon",
- "regex",
- "rpassword",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tar",
- "tempfile",
- "toml 1.2.1+spec-1.1.0",
- "ureq 3.5.1",
- "walkdir",
- "zeroize",
- "zstd",
 ]
 
 [[package]]

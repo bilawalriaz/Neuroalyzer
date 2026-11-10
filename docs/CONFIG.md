@@ -30,6 +30,10 @@ also = ["/Users/me/notes"]
 ner = true
 # Number of backups to keep.
 keep = 5
+# CPU threads for scanning, as with -j: a number, "max", "half" or "p-cores".
+threads = "max"
+# Run at low priority, as with --low-priority.
+low_priority = false
 
 [allowlist]
 # Values that are never redacted. Exact match.
@@ -54,6 +58,12 @@ group = 1
 [ner]
 threshold = 0.5
 labels = ["person", "address", "organization", "date of birth"]
+# Model workers, threads per worker, chunks per call and device. Leave them
+# out for defaults picked from your CPU (one single-threaded worker per core).
+sessions = 12
+threads = 1
+batch = 1
+device = "auto"
 
 [ip]
 enabled = true
@@ -70,6 +80,8 @@ Write regexes as TOML literal strings (single quotes), so backslashes need no es
 | `[defaults]` | `also` | list of paths | empty | Added to any `--also` paths. |
 | `[defaults]` | `ner` | boolean | `true` in default builds | `--ner` and `--no-ner` override it. |
 | `[defaults]` | `keep` | integer | `5` | `--keep` overrides it. Values below 1 keep one backup. |
+| `[defaults]` | `threads` | string | `auto` (every logical CPU) | Scan threads: a number, `max`, `half` or `p-cores`. `-j` and `NEUROALYZER_THREADS` override it. |
+| `[defaults]` | `low_priority` | boolean | `false` | Background QoS on macOS, nice 10 on Linux, below-normal on Windows. `--low-priority` and `NEUROALYZER_LOW_PRIORITY` override it. |
 | `[allowlist]` | `exact` | list of strings | empty | Values that are never redacted. |
 | `[allowlist]` | `regex` | list of strings | empty | Findings whose value matches any regex are kept as they are. |
 | `[[patterns]]` | `name` | string | required | Shown in the report as `custom:<name>`. |
@@ -77,11 +89,15 @@ Write regexes as TOML literal strings (single quotes), so backslashes need no es
 | `[[patterns]]` | `regex` | string | required | Rust regex syntax. |
 | `[[patterns]]` | `group` | integer | `0` | Capture group to redact. `0` redacts the whole match. |
 | `[ner]` | `threshold` | float | `0.5` | Minimum confidence for an NER finding. |
+| `[ner]` | `sessions` | integer | one per physical core, within `threads` | Parallel model workers. `--ner-sessions` overrides it. |
+| `[ner]` | `threads` | integer | `1` | Threads per worker. With more, the default worker count shrinks to match. `--ner-threads` overrides it. |
+| `[ner]` | `batch` | integer | `1` | Chunks per model call. Larger batches measured slower with this model. `--ner-batch` overrides it. |
+| `[ner]` | `device` | string | `auto` | `auto`, `cpu`, `coreml`, `cuda` or `directml`. All but `auto` and `cpu` need a build with that cargo feature. `auto` uses CUDA or DirectML when built in and working, otherwise the CPU. CoreML is never picked automatically: it measured slower than the CPU for this model. `--ner-device` overrides it. |
 | `[ner]` | `labels` | list of strings | person, address, organization, date of birth | Labels asked of the model. Labels map to `PERSON`, `ADDRESS`, `ORG` and `DOB`, and any other label becomes its own upper-case token type. |
 | `[ip]` | `enabled` | boolean | `true` | Detect public IPv4 addresses. |
 | `[ip]` | `include_private` | boolean | `false` | Also redact private IPv4 ranges. |
 
-Each section is optional, and so is every key within it.
+Each section is optional, and so is every key within it. Where a flag, a variable and a key all set the same thing, the flag wins, then the variable, then the key.
 
 ## Environment variables
 
@@ -91,6 +107,9 @@ Each section is optional, and so is every key within it.
 | `NEUROALYZER_DATA_DIR` | Data directory for backups, reports, the model and `hmac.key`. |
 | `NEUROALYZER_MODEL_DIR` | Directory for the NER model. |
 | `NEUROALYZER_NO_DOWNLOAD` | Never download the NER model. |
+| `NEUROALYZER_THREADS` | Scan threads, like `-j`. |
+| `NEUROALYZER_LOW_PRIORITY` | `true` to run at low priority, like `--low-priority`. |
+| `NEUROALYZER_NER_SESSIONS`, `NEUROALYZER_NER_THREADS`, `NEUROALYZER_NER_BATCH`, `NEUROALYZER_NER_DEVICE` | Like the `--ner-*` flags. |
 | `NEUROALYZER_NO_KEYRING` | Skip the OS keychain when looking for the backup password. |
 | `NEUROALYZER_PASSWORD` | Backup password. Neuroalyzer prints a warning when it is used. See [SAFETY.md](SAFETY.md). |
 | `NO_COLOR` | Turn off coloured output. |

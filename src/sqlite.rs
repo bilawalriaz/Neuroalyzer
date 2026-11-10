@@ -68,9 +68,6 @@ fn redact_cell(engine: &Engine, s: &str, col: &str, counts: &mut Counts) -> Opti
             Err(()) => {}
         }
     }
-    if let Some(ner) = &engine.ner {
-        ner.prepare(std::iter::once(s));
-    }
     engine.redact_str(s, col, counts)
 }
 
