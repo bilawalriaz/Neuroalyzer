@@ -1956,6 +1956,7 @@ dependencies = [
  "rand 0.10.3",
  "rayon",
  "regex",
+ "regex-syntax",
  "rpassword",
  "rusqlite",
  "serde",

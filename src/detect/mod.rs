@@ -83,6 +83,72 @@ struct PiiPat {
     detector: &'static str,
     re: Regex,
     check: fn(&str, &str, usize, usize, &Detectors) -> bool,
+    /// `re` with ASCII word boundaries (see `ascii_word_bounds`): a superset
+    /// that runs on the lazy DFA even when the text isn't ASCII.
+    fast: Regex,
+}
+
+/// Longest match any bounded PII pattern can produce, with room to spare
+/// (checked by a test). The one unbounded pattern, email, can't match
+/// whitespace, which `PiiPat::find` relies on.
+const PII_MAX_MATCH: usize = 128;
+
+impl PiiPat {
+    /// Every match of `re` in `text`, exactly as `re.find_iter(text)` returns
+    /// them.
+    ///
+    /// On non-ASCII text a Unicode `\b` sends the regex engine to the PikeVM,
+    /// about ten times slower, and on long tool output these patterns took
+    /// 70% of scan CPU. So: find candidates with `fast` (a superset, on the
+    /// DFA), widen each by `PII_MAX_MATCH` and then to whitespace, merge, and
+    /// run `re` only inside those windows. A window edge is either the end of
+    /// the text or next to whitespace, which is a non-word character to `\b`
+    /// either way, so matches inside a window are the same as in the full
+    /// text; and every exact match starts inside a candidate (it matches the
+    /// superset at the same start, so the candidate scan either starts there
+    /// or overlaps it) and fits in its window.
+    fn find(&self, text: &str, mut f: impl FnMut(regex::Match<'_>, usize)) {
+        if text.is_ascii() {
+            for m in self.re.find_iter(text) {
+                f(m, 0);
+            }
+            return;
+        }
+        let b = text.as_bytes();
+        let back = |mut i: usize| {
+            i = i.saturating_sub(PII_MAX_MATCH);
+            while i > 0 && !text.is_char_boundary(i) {
+                i -= 1;
+            }
+            while i > 0 && !text[..i].chars().next_back().is_some_and(char::is_whitespace) {
+                i -= text[..i].chars().next_back().map_or(1, char::len_utf8);
+            }
+            i
+        };
+        let fwd = |mut i: usize| {
+            i = (i + PII_MAX_MATCH).min(b.len());
+            while i < b.len() && !text.is_char_boundary(i) {
+                i += 1;
+            }
+            while i < b.len() && !text[i..].chars().next().is_some_and(char::is_whitespace) {
+                i += text[i..].chars().next().map_or(1, char::len_utf8);
+            }
+            i
+        };
+        let mut windows: Vec<(usize, usize)> = vec![];
+        for c in self.fast.find_iter(text) {
+            let (ws, we) = (back(c.start()), fwd(c.end()));
+            match windows.last_mut() {
+                Some(last) if ws <= last.1 => last.1 = last.1.max(we),
+                _ => windows.push((ws, we)),
+            }
+        }
+        for (ws, we) in windows {
+            for m in self.re.find_iter(&text[ws..we]) {
+                f(m, ws);
+            }
+        }
+    }
 }
 
 struct Custom {
@@ -124,6 +190,11 @@ pub struct Detectors {
 /// can only ever match *more*: it is a safe prefilter for the exact pattern.
 fn ascii_word_bounds(s: &str) -> String {
     s.replace(r"\b", r"(?-u:\b)")
+}
+
+/// Placeholder until the ASCII variant is built from `re`.
+fn no_fast() -> Regex {
+    re("[^\\s\\S]")
 }
 
 fn re(s: &str) -> Regex {
@@ -291,62 +362,78 @@ impl Detectors {
                 detector: "email",
                 re: re(r"(?i)\b[a-z0-9][a-z0-9._%+-]{0,63}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b"),
                 check: chk_email,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "PHONE",
                 detector: "phone-uk",
                 re: re(r"(?:\+44\s?(?:\(0\)\s?)?|\b0)\d{2,4}[\s-]?\d{3,4}[\s-]?\d{3,4}\b"),
                 check: chk_phone,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "PHONE",
                 detector: "phone-intl",
                 re: re(r"\+[1-9]\d{0,2}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d{2,4}){2,4}\b"),
                 check: chk_phone,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "POSTCODE",
                 detector: "uk-postcode",
                 re: re(r"\b(?:[A-Z]{1,2}\d[A-Z\d]?|GIR) ?\d[A-Z]{2}\b"),
                 check: chk_postcode,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "NINO",
                 detector: "uk-nino",
                 re: re(r"\b[A-CEGHJ-PR-TW-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-D]\b"),
                 check: chk_nino,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "NHS",
                 detector: "nhs-number",
                 re: re(r"\b\d{3}[ -]\d{3}[ -]\d{4}\b"),
                 check: chk_nhs_fmt,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "NHS",
                 detector: "nhs-number",
                 re: re(r"\b\d{10}\b"),
                 check: chk_nhs_bare,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "CARD",
                 detector: "payment-card",
                 re: re(r"\b(?:\d[ -]?){12,18}\d\b"),
                 check: chk_card,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "IBAN",
                 detector: "iban",
                 re: re(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b"),
                 check: chk_iban,
+                fast: no_fast(),
             },
             PiiPat {
                 kind: "IP",
                 detector: "ipv4",
                 re: re(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
                 check: chk_ip,
+                fast: no_fast(),
             },
-        ];
+        ]
+        .into_iter()
+        .map(|mut p| {
+            p.fast = re(&ascii_word_bounds(p.re.as_str()));
+            p
+        })
+        .collect();
         // The exact patterns are run only on strings the ASCII-boundary
         // variant matched; see `ascii_word_bounds`.
         let pre_src = pii
@@ -580,29 +667,30 @@ impl Detectors {
         // the findings identical.
         if self.pii_pre.is_match(text) {
             for p in &self.pii {
-                for m in p.re.find_iter(text) {
+                p.find(text, |m, off| {
+                    let (start, end) = (off + m.start(), off + m.end());
                     if p.kind == "IBAN" {
                         if let Some(e) = trim_iban(m.as_str()) {
                             out.push(Finding {
-                                start: m.start(),
-                                end: m.start() + e,
+                                start,
+                                end: start + e,
                                 kind: p.kind,
                                 detector: p.detector,
                                 prio: P_PII,
                             });
                         }
-                        continue;
+                        return;
                     }
-                    if (p.check)(m.as_str(), text, m.start(), m.end(), self) {
+                    if (p.check)(m.as_str(), text, start, end, self) {
                         out.push(Finding {
-                            start: m.start(),
-                            end: m.end(),
+                            start,
+                            end,
                             kind: p.kind,
                             detector: p.detector,
                             prio: P_PII,
                         });
                     }
-                }
+                });
             }
         }
         for c in &self.custom {
@@ -694,6 +782,88 @@ pub fn merge(mut f: Vec<Finding>) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `PiiPat::find` must return exactly what `re.find_iter` does, on text
+    /// mixing scripts, odd whitespace and near-miss numbers.
+    #[test]
+    fn windowed_pii_matches_full_scan() {
+        let d = Detectors::new(&Config::default(), &[]).unwrap();
+        let parts = [
+            "Ünïcödé ",
+            "東京 ",
+            "jane.doe@gmail.com",
+            "é",
+            "07700 900123",
+            "+44 7700 900123",
+            "\u{a0}",
+            "SW1A 2AA",
+            "AB 12 34 56 C",
+            "943 476 5919",
+            "9434765919",
+            "4111 1111 1111 1111",
+            "GB82 WEST 1234 5698 7654 32",
+            "8.8.8.8",
+            " ",
+            "\n",
+            "ß0123456789ß",
+            "x",
+            "-",
+            ".",
+            "@",
+            "Kelvin\u{212a}@ex.com",
+            "  ",
+            "0",
+            "12",
+            "ab",
+        ];
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..400 {
+            let n = 5 + (next() % 300) as usize;
+            let mut t = String::new();
+            for _ in 0..n {
+                t.push_str(parts[(next() % parts.len() as u64) as usize]);
+            }
+            if round % 3 == 0 {
+                t.push_str(&"y".repeat(200)); // long run without whitespace
+            }
+            for p in &d.pii {
+                let want: Vec<(usize, usize)> = p.re.find_iter(&t).map(|m| (m.start(), m.end())).collect();
+                let mut got = vec![];
+                p.find(&t, |m, off| got.push((off + m.start(), off + m.end())));
+                assert_eq!(got, want, "{} on {t:?}", p.detector);
+            }
+        }
+    }
+
+    /// The windowing in `PiiPat::find` assumes bounded patterns stay under
+    /// `PII_MAX_MATCH` and unbounded ones can't cross whitespace.
+    #[test]
+    fn pii_patterns_fit_the_window() {
+        let d = Detectors::new(&Config::default(), &[]).unwrap();
+        for p in &d.pii {
+            let hir = regex_syntax::parse(p.re.as_str()).unwrap();
+            match hir.properties().maximum_len() {
+                Some(n) => assert!(n < PII_MAX_MATCH, "{} can match {n} bytes", p.detector),
+                None => {
+                    assert!(
+                        !p.re.as_str().contains("\\s") && !p.re.as_str().contains(' '),
+                        "{}",
+                        p.detector
+                    );
+                    for ws in [" ", "\t", "\n", "\u{a0}", "\u{3000}"] {
+                        let t = format!("a.b{ws}c@example.com");
+                        assert!(p.re.find_iter(&t).all(|m| !m.as_str().contains(ws)), "{}", p.detector);
+                    }
+                }
+            }
+        }
+    }
 
     fn d() -> Detectors {
         Detectors::new(&Config::default(), &["maple-orbit-7731-quiet".to_string()]).unwrap()

@@ -64,6 +64,7 @@ libc = "0.2.191"
 windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+regex-syntax = "0.8"
 fixturegen = { path = "crates/fixturegen" }
 tempfile = "3.27.0"
 
