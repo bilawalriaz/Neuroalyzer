@@ -133,13 +133,20 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
           [System.IO.File]::WriteAllText("$archive.sha256", "$hash  $archive`n")
 
-      - name: Upload archive
+      - name: Upload archive (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
-          path: |
-            neuroalyzer-${{ needs.version.outputs.tag }}-${{ matrix.target }}.*
-            dist/*
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload archive
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.target }}
+          path: neuroalyzer-${{ needs.version.outputs.tag }}-${{ matrix.target }}.*
           if-no-files-found: error
 
   release:
