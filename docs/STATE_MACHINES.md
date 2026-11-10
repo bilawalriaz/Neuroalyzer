@@ -1,6 +1,6 @@
 # State machines
 
-This page maps every state machine in Neuroalyzer, explicit or implicit. For each one it gives the states, the transitions and the invariants the code relies on. It then lists the invalid states and transitions that the code could actually reach, with evidence, and what was done about each.
+This page maps every state machine in Neuralyzer, explicit or implicit. For each one it gives the states, the transitions and the invariants the code relies on. It then lists the invalid states and transitions that the code could actually reach, with evidence, and what was done about each.
 
 Audit baseline: commit `5814b2f`. Every finding below is fixed on `main`. Fixed findings link to the issue that holds the full write-up. The [Residual risks](#residual-risks) section lists what is known and still open.
 
@@ -68,7 +68,7 @@ stateDiagram-v2
 
 | From | Event | To | Side effects |
 |---|---|---|---|
-| start | `lock_data_dir` succeeds | Locked | Holds `neuroalyzer.lock`. Fails at once if another clean or restore holds it. |
+| start | `lock_data_dir` succeeds | Locked | Holds `neuralyzer.lock`. Fails at once if another clean or restore holds it. |
 | Locked | first pass | Analysed | Read-only. Files active or locked by another process are marked skipped here. |
 | Analysed | no file would change | Done | No backup, no journal. |
 | Analysed | user declines | Declined | Nothing written. Exit 0. |
@@ -120,7 +120,7 @@ Invariants:
 - **I2.1 (what was redacted was backed up)** The bytes that get redacted are exactly the bytes whose hash is `before`. Before the fix, the check hashed the file and the redaction then read it again (F3, F4).
 - **I2.2 (no lost update)** A write by another process that lands before the rename is never overwritten (F3). For SQLite, no other writer can commit between the check and our commit (F4).
 - **I2.3 (activity is checked close to the write)** The lock check runs again just before writing, not only in the first pass (F8).
-- **I2.4 (after-hash describes our own write)** The after-hash is the hash of the bytes Neuroalyzer wrote. It is never read back from the disk later, and a skipped group has none (F10).
+- **I2.4 (after-hash describes our own write)** The after-hash is the hash of the bytes Neuralyzer wrote. It is never read back from the disk later, and a skipped group has none (F10).
 
 ## SM3. Backup files on disk
 
@@ -134,7 +134,7 @@ States are named by which files exist for one backup base name `B` under `archiv
 | Journalling | archive + `B.after.journal` | `Journal::create` | Redaction in progress. |
 | Sealed | archive + `B.after.age` | `write_after`, then journal removed | Normal end state. |
 | Recoverable | archive + journal, no sidecar | Crash or `write_after` failure | Restore uses the journal. |
-| Pruned | none | `prune` | Only names Neuroalyzer made are pruned. |
+| Pruned | none | `prune` | Only names Neuralyzer made are pruned. |
 | Stale partial | `B….partial` with no live run | Crash during `create` | Removed by the next `prune`, which runs under the run lock. |
 
 | Transition | Guard or ordering |
@@ -142,7 +142,7 @@ States are named by which files exist for one backup base name `B` under `archiv
 | none → Reserved | `create_new` on the partial file. On `AlreadyExists`, try the next suffix `-1`, `-2`, … (F5). |
 | Writing → none | Any write or verify failure removes the partial file. |
 | Archived → Journalling → Sealed | The journal is deleted only after the sidecar has been renamed into place. |
-| Sealed or Recoverable → Pruned | Ranked newest first by the parsed `(timestamp, numeric suffix)` key (F1). Names Neuroalyzer didn't make are never counted or deleted. |
+| Sealed or Recoverable → Pruned | Ranked newest first by the parsed `(timestamp, numeric suffix)` key (F1). Names Neuralyzer didn't make are never counted or deleted. |
 
 Invariants:
 
@@ -202,7 +202,7 @@ Read-only opens (scan, and clean's first pass) use `immutable=1` when there is n
 
 ## SM7. Password resolution
 
-The first source in this order wins: `--password-file`, `--password-stdin`, `NEUROALYZER_PASSWORD`, then the OS keychain (skipped for `key save` and when `NEUROALYZER_NO_KEYRING` is set), then a prompt (asked twice except for restore). With no terminal and no source, the run fails. An empty password is rejected. Under 12 characters, a warning is printed.
+The first source in this order wins: `--password-file`, `--password-stdin`, `NEURALYZER_PASSWORD`, then the OS keychain (skipped for `key save` and when `NEURALYZER_NO_KEYRING` is set), then a prompt (asked twice except for restore). With no terminal and no source, the run fails. An empty password is rejected. Under 12 characters, a warning is printed.
 
 There are no state-machine defects here. One design note: a wrong password is only found out at restore time, because `clean` can't check it against anything. That is how age passphrase encryption works, not a bug.
 
@@ -222,7 +222,7 @@ Each file is Absent, Partial or Verified. A download streams into a uniquely nam
 
 ## SM10. The run lock
 
-`clean` and `restore` take an exclusive OS lock on `<data>/neuroalyzer.lock` (`File::try_lock`) for the whole run. A second run fails at once with a clear message. The OS drops the lock when the process exits, including on a crash, so it never goes stale. `scan` and `list` don't take it, because they write only reports and, for a new key, `hmac.key`, which is safe under SM8.
+`clean` and `restore` take an exclusive OS lock on `<data>/neuralyzer.lock` (`File::try_lock`) for the whole run. A second run fails at once with a clear message. The OS drops the lock when the process exits, including on a crash, so it never goes stale. `scan` and `list` don't take it, because they write only reports and, for a new key, `hmac.key`, which is safe under SM8.
 
 ## Findings
 
@@ -230,20 +230,20 @@ These are the invalid states and transitions that the code at `5814b2f` could re
 
 | ID | Machine | Invalid state or transition | Reachable through | Impact | Evidence | Issue |
 |---|---|---|---|---|---|---|
-| F1 | SM3 | The newest archive ranks below an older one, so prune deletes it | Two cleans in the same second (`-1` suffix), or ten or more (`-10` < `-2`) | **High**: the only backup of the originals is deleted | Repro: picker listed `…151759.tar.zst.age` (4 B placeholder) above `…151759-1.tar.zst.age` (the real, newer backup) | [#6](https://github.com/bilawalriaz/neuroalyzer/issues/6) |
-| F2 | SM1, SM3 | Files redacted, archive present, no after-hashes anywhere | Ctrl-C, crash, power loss or full disk during or after the redaction pass | **High**: restore refuses every file (exit 2) unless `--force` | Repro: with the sidecar removed, `Restored 0 file(s)` and 23× `changed since cleaning`, exit 2 | [#9](https://github.com/bilawalriaz/neuroalyzer/issues/9) |
-| F3 | SM2 | Redacted content that isn't in the backup; agent writes overwritten | An agent appending between the hash check, the re-read and the rename; mmap SIGBUS on truncation | **High**: session data lost or unrecoverable | Code: [run.rs:321-345](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/run.rs#L321-L345) | [#7](https://github.com/bilawalriaz/neuroalyzer/issues/7) |
-| F4 | SM2, SM6 | Committed SQLite rows redacted without a backup | An agent committing between the unlocked hash check and `BEGIN IMMEDIATE` | **High** | Code: [sqlite.rs:200-214](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/sqlite.rs#L200-L214) | [#7](https://github.com/bilawalriaz/neuroalyzer/issues/7) |
-| F5 | SM3 | Two runs writing one `.partial` | Concurrent cleans in the same second | Medium: both fail verification, or garbage | Code: `File::create` at [backup.rs:165](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/backup.rs#L165) | [#6](https://github.com/bilawalriaz/neuroalyzer/issues/6) |
-| F6 | SM3 | An ambiguous prefix resolves to an arbitrary archive | `restore neuroalyzer-2026…` with two or more backups | Medium: the wrong backup is restored (with `--force`) | Repro: picked one of two matches without saying so | [#6](https://github.com/bilawalriaz/neuroalyzer/issues/6) |
-| F7 | SM10 | Two clean or restore runs at once | Scripts, a second terminal | Medium: enables F5, and lets one run prune what another run uses | Repro: e2e `concurrent_runs_are_refused` fails on `5814b2f` | [#6](https://github.com/bilawalriaz/neuroalyzer/issues/6) |
-| F8 | SM2 | A file the agent locked after the first pass is replaced | An agent restarted while the confirm or password prompt waits | Medium-high | Code: the lock check only in `analyse` | [#7](https://github.com/bilawalriaz/neuroalyzer/issues/7) |
-| F9 | SM4 | Restore replaces a locked file | Restore while the agent runs | Medium-high | Repro: e2e `restore_skips_locked_files` fails on `5814b2f` (`Restored 3 file(s)`) | [#8](https://github.com/bilawalriaz/neuroalyzer/issues/8) |
-| F10 | SM4, SM5 | A file clean never wrote is restored without asking | Clean skipped a file as "changed after backup", then the user restores | Medium-high: the agent's newer turns are rolled back silently | Code: [run.rs:364-371](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/run.rs#L364-L371) | [#8](https://github.com/bilawalriaz/neuroalyzer/issues/8) |
-| F11 | SM1, SM6 | Report says `skipped: error, modified: false` for a redacted DB | `VACUUM` fails after `COMMIT` (disk full) | Medium: false report, and no after-hash | Code: [sqlite.rs:217-224](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/sqlite.rs#L217-L224) | [#9](https://github.com/bilawalriaz/neuroalyzer/issues/9) |
-| F12 | SM1 | No report and no prune after files were redacted | Sidecar write fails (`?`) | Low-medium | Code: [run.rs:372-380](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/run.rs#L372-L380) | [#9](https://github.com/bilawalriaz/neuroalyzer/issues/9) |
-| F13 | SM8 | Key silently replaced, or two keys in use | A damaged or unreadable key; concurrent first runs | Medium: tokens stop matching across runs | Code: [token.rs:16-31](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/token.rs#L16-L31) | [#10](https://github.com/bilawalriaz/neuroalyzer/issues/10) |
-| F14 | SM9 | Shared or leftover `.partial` model file | Concurrent or interrupted `model fetch` | Low: fails safe through SHA-256 | Code: [ner.rs:150-180](https://github.com/bilawalriaz/neuroalyzer/blob/5814b2f/src/ner.rs#L150-L180) | [#10](https://github.com/bilawalriaz/neuroalyzer/issues/10) |
+| F1 | SM3 | The newest archive ranks below an older one, so prune deletes it | Two cleans in the same second (`-1` suffix), or ten or more (`-10` < `-2`) | **High**: the only backup of the originals is deleted | Repro: picker listed `…151759.tar.zst.age` (4 B placeholder) above `…151759-1.tar.zst.age` (the real, newer backup) | [#6](https://github.com/bilawalriaz/neuralyzer/issues/6) |
+| F2 | SM1, SM3 | Files redacted, archive present, no after-hashes anywhere | Ctrl-C, crash, power loss or full disk during or after the redaction pass | **High**: restore refuses every file (exit 2) unless `--force` | Repro: with the sidecar removed, `Restored 0 file(s)` and 23× `changed since cleaning`, exit 2 | [#9](https://github.com/bilawalriaz/neuralyzer/issues/9) |
+| F3 | SM2 | Redacted content that isn't in the backup; agent writes overwritten | An agent appending between the hash check, the re-read and the rename; mmap SIGBUS on truncation | **High**: session data lost or unrecoverable | Code: [run.rs:321-345](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/run.rs#L321-L345) | [#7](https://github.com/bilawalriaz/neuralyzer/issues/7) |
+| F4 | SM2, SM6 | Committed SQLite rows redacted without a backup | An agent committing between the unlocked hash check and `BEGIN IMMEDIATE` | **High** | Code: [sqlite.rs:200-214](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/sqlite.rs#L200-L214) | [#7](https://github.com/bilawalriaz/neuralyzer/issues/7) |
+| F5 | SM3 | Two runs writing one `.partial` | Concurrent cleans in the same second | Medium: both fail verification, or garbage | Code: `File::create` at [backup.rs:165](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/backup.rs#L165) | [#6](https://github.com/bilawalriaz/neuralyzer/issues/6) |
+| F6 | SM3 | An ambiguous prefix resolves to an arbitrary archive | `restore neuralyzer-2026…` with two or more backups | Medium: the wrong backup is restored (with `--force`) | Repro: picked one of two matches without saying so | [#6](https://github.com/bilawalriaz/neuralyzer/issues/6) |
+| F7 | SM10 | Two clean or restore runs at once | Scripts, a second terminal | Medium: enables F5, and lets one run prune what another run uses | Repro: e2e `concurrent_runs_are_refused` fails on `5814b2f` | [#6](https://github.com/bilawalriaz/neuralyzer/issues/6) |
+| F8 | SM2 | A file the agent locked after the first pass is replaced | An agent restarted while the confirm or password prompt waits | Medium-high | Code: the lock check only in `analyse` | [#7](https://github.com/bilawalriaz/neuralyzer/issues/7) |
+| F9 | SM4 | Restore replaces a locked file | Restore while the agent runs | Medium-high | Repro: e2e `restore_skips_locked_files` fails on `5814b2f` (`Restored 3 file(s)`) | [#8](https://github.com/bilawalriaz/neuralyzer/issues/8) |
+| F10 | SM4, SM5 | A file clean never wrote is restored without asking | Clean skipped a file as "changed after backup", then the user restores | Medium-high: the agent's newer turns are rolled back silently | Code: [run.rs:364-371](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/run.rs#L364-L371) | [#8](https://github.com/bilawalriaz/neuralyzer/issues/8) |
+| F11 | SM1, SM6 | Report says `skipped: error, modified: false` for a redacted DB | `VACUUM` fails after `COMMIT` (disk full) | Medium: false report, and no after-hash | Code: [sqlite.rs:217-224](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/sqlite.rs#L217-L224) | [#9](https://github.com/bilawalriaz/neuralyzer/issues/9) |
+| F12 | SM1 | No report and no prune after files were redacted | Sidecar write fails (`?`) | Low-medium | Code: [run.rs:372-380](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/run.rs#L372-L380) | [#9](https://github.com/bilawalriaz/neuralyzer/issues/9) |
+| F13 | SM8 | Key silently replaced, or two keys in use | A damaged or unreadable key; concurrent first runs | Medium: tokens stop matching across runs | Code: [token.rs:16-31](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/token.rs#L16-L31) | [#10](https://github.com/bilawalriaz/neuralyzer/issues/10) |
+| F14 | SM9 | Shared or leftover `.partial` model file | Concurrent or interrupted `model fetch` | Low: fails safe through SHA-256 | Code: [ner.rs:150-180](https://github.com/bilawalriaz/neuralyzer/blob/5814b2f/src/ner.rs#L150-L180) | [#10](https://github.com/bilawalriaz/neuralyzer/issues/10) |
 
 ## Issues and fixes
 
@@ -251,17 +251,17 @@ The findings are grouped into issues by root cause. The fix commit lists each is
 
 | Issue | Findings | Fix | Regression tests |
 |---|---|---|---|
-| [#6 Backups: newest archive can be pruned; same-second runs collide; restore prefix not unique](https://github.com/bilawalriaz/neuroalyzer/issues/6) | F1, F5, F6, F7 | `backup::name_key` ordering; `reserve` with `create_new`; `run::resolve_archive`; `paths::lock_data_dir`; prune removes stale partial files | `backup::tests::{collision_suffixes_sort_newest_first, prune_keeps_the_newest_collision_and_foreign_files, concurrent_reservations_get_distinct_names, name_key_parses_neuroalyzer_names_only}`, `run::tests::ambiguous_prefix_is_refused`, `e2e::concurrent_runs_are_refused` |
-| [#7 Clean: redaction races the agent (check-then-act)](https://github.com/bilawalriaz/neuroalyzer/issues/7) | F3, F4, F8 | `fsutil::rewrite_checked`; `sqlite::process_checked` with the precheck under `BEGIN IMMEDIATE`; `run::redact_group` checks locks again | `fsutil::tests::rewrite_checked_*`, `sqlite::tests::{precheck_runs_under_the_write_lock, failed_precheck_changes_nothing}`, `run::tests::redact_group_*` |
-| [#8 Restore: overwrites locked files and silently rolls back edits clean never made](https://github.com/bilawalriaz/neuroalyzer/issues/8) | F9, F10 | Restore checks `lock_reason` per group; after-hashes come only from clean's own writes | `e2e::restore_skips_locked_files`, `backup::restore_tests::restore_leaves_files_clean_never_wrote` |
-| [#9 Interrupted or partly failed clean leaves backup and report inconsistent](https://github.com/bilawalriaz/neuroalyzer/issues/9) | F2, F11, F12 | `backup::Journal` with fallback in `load_after`; errors after `COMMIT` become notes; a sidecar failure is no longer fatal | `e2e::interrupted_clean_is_restorable_without_force`, `e2e::vacuum_failure_after_commit_is_reported_as_modified`, `backup::tests::journal_round_trip_ignores_torn_lines` |
-| [#10 HMAC key can be silently replaced or diverge; model download partial files](https://github.com/bilawalriaz/neuroalyzer/issues/10) | F13, F14 | `Tokenizer::load_or_create` with no-clobber and no replacement; `fsutil::install_verified` | `token::tests::*`, `fsutil::tests::install_verified_*` |
+| [#6 Backups: newest archive can be pruned; same-second runs collide; restore prefix not unique](https://github.com/bilawalriaz/neuralyzer/issues/6) | F1, F5, F6, F7 | `backup::name_key` ordering; `reserve` with `create_new`; `run::resolve_archive`; `paths::lock_data_dir`; prune removes stale partial files | `backup::tests::{collision_suffixes_sort_newest_first, prune_keeps_the_newest_collision_and_foreign_files, concurrent_reservations_get_distinct_names, name_key_parses_neuralyzer_names_only}`, `run::tests::ambiguous_prefix_is_refused`, `e2e::concurrent_runs_are_refused` |
+| [#7 Clean: redaction races the agent (check-then-act)](https://github.com/bilawalriaz/neuralyzer/issues/7) | F3, F4, F8 | `fsutil::rewrite_checked`; `sqlite::process_checked` with the precheck under `BEGIN IMMEDIATE`; `run::redact_group` checks locks again | `fsutil::tests::rewrite_checked_*`, `sqlite::tests::{precheck_runs_under_the_write_lock, failed_precheck_changes_nothing}`, `run::tests::redact_group_*` |
+| [#8 Restore: overwrites locked files and silently rolls back edits clean never made](https://github.com/bilawalriaz/neuralyzer/issues/8) | F9, F10 | Restore checks `lock_reason` per group; after-hashes come only from clean's own writes | `e2e::restore_skips_locked_files`, `backup::restore_tests::restore_leaves_files_clean_never_wrote` |
+| [#9 Interrupted or partly failed clean leaves backup and report inconsistent](https://github.com/bilawalriaz/neuralyzer/issues/9) | F2, F11, F12 | `backup::Journal` with fallback in `load_after`; errors after `COMMIT` become notes; a sidecar failure is no longer fatal | `e2e::interrupted_clean_is_restorable_without_force`, `e2e::vacuum_failure_after_commit_is_reported_as_modified`, `backup::tests::journal_round_trip_ignores_torn_lines` |
+| [#10 HMAC key can be silently replaced or diverge; model download partial files](https://github.com/bilawalriaz/neuralyzer/issues/10) | F13, F14 | `Tokenizer::load_or_create` with no-clobber and no replacement; `fsutil::install_verified` | `token::tests::*`, `fsutil::tests::install_verified_*` |
 
-Two tests, `interrupted_clean_is_restorable_without_force` and `vacuum_failure_after_commit_is_reported_as_modified`, stop the run at a chosen step with `NEUROALYZER_TEST_FAULT`. Only debug builds honour it (`fault::hit`), and the tests are ignored in release builds. On `5814b2f` they fail because the hook doesn't exist there. The evidence for F2 is the CLI reproduction above, and the evidence for F11 is the code path.
+Two tests, `interrupted_clean_is_restorable_without_force` and `vacuum_failure_after_commit_is_reported_as_modified`, stop the run at a chosen step with `NEURALYZER_TEST_FAULT`. Only debug builds honour it (`fault::hit`), and the tests are ignored in release builds. On `5814b2f` they fail because the hook doesn't exist there. The evidence for F2 is the CLI reproduction above, and the evidence for F11 is the code path.
 
 ## Residual risks
 
-These are known and not fixed, either because they can't be fixed from Neuroalyzer's side or because they are rare enough to only document.
+These are known and not fixed, either because they can't be fixed from Neuralyzer's side or because they are rare enough to only document.
 
 | Risk | Why it remains | Mitigation |
 |---|---|---|

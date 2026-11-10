@@ -309,7 +309,7 @@ mod imp {
                 );
             }
             let resp = ureq::get(&url).call().with_context(|| {
-                format!("couldn't download {url}. Check your network or proxy, then run `neuroalyzer model fetch`.")
+                format!("couldn't download {url}. Check your network or proxy, then run `neuralyzer model fetch`.")
             })?;
             let reader = resp.into_body().into_reader();
             let pb = if quiet {

@@ -1,6 +1,6 @@
-//! Where neuroalyzer keeps its own files.
+//! Where neuralyzer keeps its own files.
 //!
-//! `NEUROALYZER_DATA_DIR` overrides the data dir (archives, reports, model, HMAC
+//! `NEURALYZER_DATA_DIR` overrides the data dir (archives, reports, model, HMAC
 //! key). Tests use it to stay out of the real profile.
 
 use anyhow::{Context, Result};
@@ -21,21 +21,21 @@ pub fn env_value(suffix: &str) -> Option<String> {
 }
 
 pub fn data_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("NEUROALYZER_DATA_DIR") {
+    if let Some(p) = std::env::var_os("NEURALYZER_DATA_DIR") {
         return PathBuf::from(p);
     }
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("neuroalyzer")
+        .join("neuralyzer")
 }
 
 pub fn config_file() -> PathBuf {
-    if let Some(p) = std::env::var_os("NEUROALYZER_CONFIG") {
+    if let Some(p) = std::env::var_os("NEURALYZER_CONFIG") {
         return PathBuf::from(p);
     }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("neuroalyzer")
+        .join("neuralyzer")
         .join("config.toml")
 }
 
@@ -47,9 +47,9 @@ pub fn reports_dir() -> PathBuf {
     data_dir().join("reports")
 }
 
-/// `NEUROALYZER_MODEL_DIR` overrides where the NER model lives (shared caches, tests).
+/// `NEURALYZER_MODEL_DIR` overrides where the NER model lives (shared caches, tests).
 pub fn models_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("NEUROALYZER_MODEL_DIR") {
+    if let Some(p) = std::env::var_os("NEURALYZER_MODEL_DIR") {
         return PathBuf::from(p);
     }
     data_dir().join("models")
@@ -90,7 +90,7 @@ pub struct RunLock {
 pub fn lock_data_dir() -> Result<RunLock> {
     let d = data_dir();
     ensure_private_dir(&d)?;
-    let p = d.join("neuroalyzer.lock");
+    let p = d.join("neuralyzer.lock");
     let f = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -100,7 +100,7 @@ pub fn lock_data_dir() -> Result<RunLock> {
     match f.try_lock() {
         Ok(()) => Ok(RunLock { _f: f }),
         Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
-            "another neuroalyzer clean or restore is running (it holds {}). Wait for it to finish, then try again.",
+            "another neuralyzer clean or restore is running (it holds {}). Wait for it to finish, then try again.",
             p.display()
         ),
         Err(std::fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("couldn't lock {}", p.display())),

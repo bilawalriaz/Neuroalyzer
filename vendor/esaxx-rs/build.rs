@@ -1,4 +1,4 @@
-// neuroalyzer patch: upstream forces the static C runtime (/MT), which clashes
+// neuralyzer patch: upstream forces the static C runtime (/MT), which clashes
 // with ONNX Runtime's /MD build on Windows (LNK2038). Follow the target's
 // crt-static setting instead.
 #[cfg(feature = "cpp")]

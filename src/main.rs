@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
-use neuroalyzer::config::Config;
-use neuroalyzer::password::PwArgs;
-use neuroalyzer::run::{self, ScanOpts};
+use neuralyzer::config::Config;
+use neuralyzer::password::PwArgs;
+use neuralyzer::run::{self, ScanOpts};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -9,10 +9,10 @@ const ABOUT: &str = "Find the local session data of AI coding agents (Claude Cod
 
 const AFTER_HELP: &str = "Exit codes: 0 = clean, 1 = scan found something, 2 = error.
 
-Start with `neuroalyzer list`, then `neuroalyzer scan`. To try it on a copy first, copy your home-dir session folders into a directory and pass it with --root.";
+Start with `neuralyzer list`, then `neuralyzer scan`. To try it on a copy first, copy your home-dir session folders into a directory and pass it with --root.";
 
 #[derive(Parser)]
-#[command(name = "neuroalyzer", version, about = ABOUT, after_help = AFTER_HELP)]
+#[command(name = "neuralyzer", version, about = ABOUT, after_help = AFTER_HELP)]
 struct Cli {
     /// More detail (repeat for more).
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -161,19 +161,19 @@ where
     if flag.is_some() {
         return Ok(flag);
     }
-    if let Some(v) = neuroalyzer::paths::env_value(env) {
+    if let Some(v) = neuralyzer::paths::env_value(env) {
         return v
             .trim()
             .parse()
             .map(Some)
-            .map_err(|e| anyhow::anyhow!("{}={v}: {e}", neuroalyzer::paths::env_name(env)));
+            .map_err(|e| anyhow::anyhow!("{}={v}: {e}", neuralyzer::paths::env_name(env)));
     }
     Ok(cfg)
 }
 
-fn ner_runtime(c: &Common, cfg: &Config) -> anyhow::Result<neuroalyzer::ner::Runtime> {
-    use neuroalyzer::ner::{Device, Runtime};
-    let cores = neuroalyzer::hw::detect();
+fn ner_runtime(c: &Common, cfg: &Config) -> anyhow::Result<neuralyzer::ner::Runtime> {
+    use neuralyzer::ner::{Device, Runtime};
+    let cores = neuralyzer::hw::detect();
     let mut auto = Runtime::auto(&cores);
     // Stay inside the -j budget (the scan pool is sized before this runs).
     auto.sessions = auto.sessions.min(rayon::current_num_threads()).max(1);
@@ -216,10 +216,10 @@ fn opts(c: &Common, cfg: &Config, cli: &Cli, min_age: u64) -> anyhow::Result<Sca
 
 /// Size the scan pool and set priority before any worker threads start.
 fn setup_threads(cli: &Cli, cfg: &Config) -> anyhow::Result<()> {
-    use neuroalyzer::hw::Budget;
+    use neuralyzer::hw::Budget;
     let low = cli.low_priority || pick(None::<bool>, "LOW_PRIORITY", cfg.defaults.low_priority)?.unwrap_or(false);
     if low {
-        neuroalyzer::hw::lower_priority();
+        neuralyzer::hw::lower_priority();
     }
     let budget = pick::<Budget>(
         cli.threads
@@ -236,7 +236,7 @@ fn setup_threads(cli: &Cli, cfg: &Config) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("config defaults.threads: {e}"))?,
     )?
     .unwrap_or(Budget::Auto);
-    let cores = neuroalyzer::hw::detect();
+    let cores = neuralyzer::hw::detect();
     let n = budget.threads(&cores);
     // Ignore "already built": tests and library users may have set it up.
     let _ = rayon::ThreadPoolBuilder::new().num_threads(n).build_global();
@@ -280,9 +280,9 @@ fn real_main(cli: Cli) -> anyhow::Result<i32> {
         Cmd::Restore { archive, force, pw } => run::restore(archive.clone(), *force, pw, cli.quiet),
         Cmd::Key {
             cmd: KeyCmd::Save { pw },
-        } => neuroalyzer::password::key_save(pw).map(|_| 0),
-        Cmd::Key { cmd: KeyCmd::Clear } => neuroalyzer::password::key_clear().map(|_| 0),
-        Cmd::Model { cmd: ModelCmd::Fetch } => neuroalyzer::ner::fetch(cli.quiet).map(|_| 0),
+        } => neuralyzer::password::key_save(pw).map(|_| 0),
+        Cmd::Key { cmd: KeyCmd::Clear } => neuralyzer::password::key_clear().map(|_| 0),
+        Cmd::Model { cmd: ModelCmd::Fetch } => neuralyzer::ner::fetch(cli.quiet).map(|_| 0),
     }
 }
 

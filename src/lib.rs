@@ -1,4 +1,4 @@
-//! Neuroalyzer: scrub secrets and PII from local AI coding agent session data.
+//! Neuralyzer: scrub secrets and PII from local AI coding agent session data.
 
 pub mod backup;
 pub mod config;

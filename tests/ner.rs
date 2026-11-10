@@ -1,5 +1,5 @@
-//! NER recall on the fixture tree. Opt-in: set NEUROALYZER_TEST_MODEL_DIR to a
-//! directory that already holds the model (`NEUROALYZER_MODEL_DIR=... neuroalyzer model fetch`).
+//! NER recall on the fixture tree. Opt-in: set NEURALYZER_TEST_MODEL_DIR to a
+//! directory that already holds the model (`NEURALYZER_MODEL_DIR=... neuralyzer model fetch`).
 
 mod common;
 use common::*;
@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 #[test]
 fn ner_recall() {
-    let Some(models) = std::env::var_os("NEUROALYZER_TEST_MODEL_DIR") else {
-        eprintln!("skipping: NEUROALYZER_TEST_MODEL_DIR not set");
+    let Some(models) = std::env::var_os("NEURALYZER_TEST_MODEL_DIR") else {
+        eprintln!("skipping: NEURALYZER_TEST_MODEL_DIR not set");
         return;
     };
     if !cfg!(feature = "ner") {
@@ -27,8 +27,8 @@ fn ner_recall() {
             &fx.pw_s(),
             "--json",
         ])
-        .env("NEUROALYZER_MODEL_DIR", &models)
-        .env("NEUROALYZER_NO_DOWNLOAD", "1")
+        .env("NEURALYZER_MODEL_DIR", &models)
+        .env("NEURALYZER_NO_DOWNLOAD", "1")
         .output()
         .unwrap();
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));

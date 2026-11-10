@@ -1,5 +1,5 @@
 //! Backup password resolution. Order: --password-file, --password-stdin,
-//! NEUROALYZER_PASSWORD, OS keychain, interactive prompt. The password is never
+//! NEURALYZER_PASSWORD, OS keychain, interactive prompt. The password is never
 //! taken as a plain argument, never logged, and zeroized after use.
 
 use age::secrecy::SecretString;
@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
-const KEYRING_SERVICE: &str = "neuroalyzer";
+const KEYRING_SERVICE: &str = "neuralyzer";
 const KEYRING_USER: &str = "backup-password";
 
 #[derive(clap::Args, Debug, Clone, Default)]
@@ -92,16 +92,16 @@ pub fn resolve(args: &PwArgs, purpose: Purpose, quiet: bool) -> Result<SecretStr
         let s = Zeroizing::new(strip_newline(std::mem::take(&mut *line)));
         return finish(s, quiet);
     }
-    if let Ok(v) = std::env::var("NEUROALYZER_PASSWORD") {
+    if let Ok(v) = std::env::var("NEURALYZER_PASSWORD") {
         if !quiet {
             eprintln!(
-                "warning: using NEUROALYZER_PASSWORD. Environment variables can leak into logs and child processes."
+                "warning: using NEURALYZER_PASSWORD. Environment variables can leak into logs and child processes."
             );
         }
         return finish(Zeroizing::new(v), quiet);
     }
     if purpose != Purpose::SaveToKeychain
-        && std::env::var_os("NEUROALYZER_NO_KEYRING").is_none()
+        && std::env::var_os("NEURALYZER_NO_KEYRING").is_none()
         && let Some(e) = keyring_entry()
         && let Ok(pw) = e.get_password()
     {
@@ -109,7 +109,7 @@ pub fn resolve(args: &PwArgs, purpose: Purpose, quiet: bool) -> Result<SecretStr
     }
     if !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal() {
         bail!(
-            "no backup password available and there's no terminal to ask for one. Use one of:\n  --password-file <path>\n  --password-stdin\n  NEUROALYZER_PASSWORD (env var)\n  neuroalyzer key save (stores it in the OS keychain)"
+            "no backup password available and there's no terminal to ask for one. Use one of:\n  --password-file <path>\n  --password-stdin\n  NEURALYZER_PASSWORD (env var)\n  neuralyzer key save (stores it in the OS keychain)"
         );
     }
     let first = Zeroizing::new(rpassword::prompt_password("Backup password: ").context("couldn't read the password")?);

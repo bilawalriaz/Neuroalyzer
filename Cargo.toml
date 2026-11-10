@@ -3,12 +3,12 @@ members = [".", "crates/fixturegen"]
 exclude = ["vendor"]
 
 [package]
-name = "neuroalyzer"
-version = "2.1.0"
+name = "neuralyzer"
+version = "3.0.0"
 edition = "2024"
 license = "MIT"
 description = "Scrub secrets and PII from local AI coding agent session data"
-repository = "https://github.com/bilawalriaz/neuroalyzer"
+repository = "https://github.com/bilawalriaz/neuralyzer"
 readme = "README.md"
 rust-version = "1.89"
 

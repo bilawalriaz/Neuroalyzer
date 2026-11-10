@@ -111,10 +111,10 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          archive="neuroalyzer-${TAG}-${TARGET}.tar.gz"
+          archive="neuralyzer-${TAG}-${TARGET}.tar.gz"
           stage="$(mktemp -d)"
-          cp "target/${TARGET}/release/neuroalyzer" README.md LICENSE "$stage/"
-          tar -C "$stage" -czf "$archive" neuroalyzer README.md LICENSE
+          cp "target/${TARGET}/release/neuralyzer" README.md LICENSE "$stage/"
+          tar -C "$stage" -czf "$archive" neuralyzer README.md LICENSE
           shasum -a 256 "$archive" > "$archive.sha256"
 
       - name: Package (Windows)
@@ -125,10 +125,10 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           $ErrorActionPreference = "Stop"
-          $archive = "neuroalyzer-$env:TAG-$env:TARGET.zip"
+          $archive = "neuralyzer-$env:TAG-$env:TARGET.zip"
           $stage = Join-Path $env:RUNNER_TEMP "stage-$env:TARGET"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item -Path "target\$env:TARGET\release\neuroalyzer.exe", "README.md", "LICENSE" -Destination $stage
+          Copy-Item -Path "target\$env:TARGET\release\neuralyzer.exe", "README.md", "LICENSE" -Destination $stage
           Compress-Archive -Path "$stage\*" -DestinationPath $archive
           $hash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
           [System.IO.File]::WriteAllText("$archive.sha256", "$hash  $archive`n")
@@ -146,7 +146,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
-          path: neuroalyzer-${{ needs.version.outputs.tag }}-${{ matrix.target }}.*
+          path: neuralyzer-${{ needs.version.outputs.tag }}-${{ matrix.target }}.*
           if-no-files-found: error
 
   release:
@@ -168,7 +168,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.tag }}
-          name: Neuroalyzer ${{ needs.version.outputs.tag }}
+          name: Neuralyzer ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           make_latest: true

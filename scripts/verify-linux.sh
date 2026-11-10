@@ -56,15 +56,15 @@ for image in ubuntu:22.04 ubuntu:24.04 fedora:41 fedora:latest; do
         # rejected on Fedora 43+, where signature verification is mandatory.
         dnf install -y /d/*.rpm
       fi
-      command -v neuroalyzer
-      neuroalyzer --version
+      command -v neuralyzer
+      neuralyzer --version
 
       tar -xzf /d/*x86_64-unknown-linux-gnu.tar.gz -C /tmp
-      /tmp/neuroalyzer --version
+      /tmp/neuralyzer --version
 
-      export NEUROALYZER_DATA_DIR=/tmp/data
+      export NEURALYZER_DATA_DIR=/tmp/data
       status=0
-      neuroalyzer scan --root /fixture/root --no-ner --json >/tmp/report.json || status=$?
+      neuralyzer scan --root /fixture/root --no-ner --json >/tmp/report.json || status=$?
       test "$status" -eq 1
       grep -q "\"SECRET\"" /tmp/report.json
     '

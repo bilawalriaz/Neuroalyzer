@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an improvement to Neuroalyzer
+about: Suggest an improvement to Neuralyzer
 labels: enhancement
 ---
 

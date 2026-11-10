@@ -583,7 +583,7 @@ fn resolve_archive(name: &str, list: &[backup::ArchiveInfo]) -> Result<PathBuf> 
     }
     let hits: Vec<&backup::ArchiveInfo> = list.iter().filter(|a| a.name.starts_with(name)).collect();
     match hits.as_slice() {
-        [] => bail!("no backup called '{name}'. Run `neuroalyzer restore` to list them."),
+        [] => bail!("no backup called '{name}'. Run `neuralyzer restore` to list them."),
         [a] => Ok(a.path.clone()),
         many => bail!(
             "'{name}' matches {} backups:\n{}\nGive more of the name.",
@@ -719,7 +719,7 @@ pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bo
                 );
             }
             if !std::io::stdin().is_terminal() {
-                eprintln!("\nRestore one with: neuroalyzer restore <NAME>");
+                eprintln!("\nRestore one with: neuralyzer restore <NAME>");
                 return Ok(0);
             }
             eprint!(
@@ -815,7 +815,7 @@ mod tests {
             mode: None,
             before,
         };
-        let j = backup::Journal::create(&d.join("neuroalyzer-20261109-120000.tar.zst.age")).unwrap();
+        let j = backup::Journal::create(&d.join("neuralyzer-20261109-120000.tar.zst.age")).unwrap();
         (job, e, j)
     }
 
@@ -827,7 +827,7 @@ mod tests {
         assert!(o.would_change);
         let now = fsutil::hash_file(&job.path).unwrap();
         assert_eq!(after, vec![(e.id.clone(), now)]);
-        let journal = std::fs::read_to_string(d.path().join("neuroalyzer-20261109-120000.after.journal")).unwrap();
+        let journal = std::fs::read_to_string(d.path().join("neuralyzer-20261109-120000.after.journal")).unwrap();
         assert!(journal.contains(after[0].1.as_deref().unwrap()));
     }
 
@@ -883,19 +883,19 @@ mod tests {
     #[test]
     fn ambiguous_prefix_is_refused() {
         let l = [
-            info("neuroalyzer-20261109-120000-1.tar.zst.age"),
-            info("neuroalyzer-20261109-120000.tar.zst.age"),
-            info("neuroalyzer-20261108-090000.tar.zst.age"),
+            info("neuralyzer-20261109-120000-1.tar.zst.age"),
+            info("neuralyzer-20261109-120000.tar.zst.age"),
+            info("neuralyzer-20261108-090000.tar.zst.age"),
         ];
-        let err = resolve_archive("neuroalyzer-20261109", &l).unwrap_err();
+        let err = resolve_archive("neuralyzer-20261109", &l).unwrap_err();
         assert!(format!("{err}").contains("matches 2 backups"), "{err}");
         assert_eq!(
-            resolve_archive("neuroalyzer-20261108", &l).unwrap(),
+            resolve_archive("neuralyzer-20261108", &l).unwrap(),
             l[2].path,
             "a unique prefix still works"
         );
         assert_eq!(
-            resolve_archive("neuroalyzer-20261109-120000.tar.zst.age", &l).unwrap(),
+            resolve_archive("neuralyzer-20261109-120000.tar.zst.age", &l).unwrap(),
             l[1].path,
             "an exact name wins even when it is also a prefix of another"
         );

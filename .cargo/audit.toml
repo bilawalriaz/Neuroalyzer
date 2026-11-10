@@ -1,7 +1,7 @@
 [advisories]
 # RUSTSEC-2026-0387: timing variability in crypto-bigint 0.5. It reaches us
 # only through age's P-256 recipient support (hpke/p256), a non-optional
-# dependency of age 0.12.1. Neuroalyzer only uses age's scrypt passphrase mode,
+# dependency of age 0.12.1. Neuralyzer only uses age's scrypt passphrase mode,
 # so no P-256 operation runs. Remove this once age depends on
 # crypto-bigint >= 0.7.6.
 ignore = ["RUSTSEC-2026-0387"]

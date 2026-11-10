@@ -1930,8 +1930,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "neuroalyzer"
-version = "2.1.0"
+name = "neuralyzer"
+version = "3.0.0"
 dependencies = [
  "age",
  "aho-corasick",

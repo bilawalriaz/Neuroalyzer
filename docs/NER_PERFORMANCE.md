@@ -44,8 +44,8 @@ NER findings are identical to 2.0.0 (`bench/compare.py`). What changed for NER: 
 
 ```sh
 cargo build --release
-bench/bench.py target/release/neuroalyzer --root ~/scrub-test --modes no-ner,cold,warm
+bench/bench.py target/release/neuralyzer --root ~/scrub-test --modes no-ner,cold,warm
 bench/compare.py bench/reports/<old>.json bench/reports/<new>.json
 ```
 
-`bench/bench.py` needs the model already downloaded; point `NEUROALYZER_MODEL_DIR` at it.
+`bench/bench.py` needs the model already downloaded; point `NEURALYZER_MODEL_DIR` at it.

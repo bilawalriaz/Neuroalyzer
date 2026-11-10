@@ -17,7 +17,7 @@ esac
 
 target=x86_64-unknown-linux-gnu
 tag="v${version}"
-bin="target/${target}/release/neuroalyzer"
+bin="target/${target}/release/neuralyzer"
 nfpm="${NFPM:-nfpm}"
 
 if [ ! -x "$bin" ]; then
@@ -37,12 +37,12 @@ mkdir -p dist/stage
 cp "$bin" README.md LICENSE dist/stage/
 cp -R docs dist/stage/docs
 
-tar -C dist/stage -czf "$PWD/dist/neuroalyzer-${tag}-${target}.tar.gz" neuroalyzer README.md LICENSE
+tar -C dist/stage -czf "$PWD/dist/neuralyzer-${tag}-${target}.tar.gz" neuralyzer README.md LICENSE
 
 ARCH=amd64 VERSION="$version" "$nfpm" package --config packaging/nfpm.yaml --packager deb \
-  --target "dist/neuroalyzer_${version}_amd64.deb"
+  --target "dist/neuralyzer_${version}_amd64.deb"
 ARCH=amd64 VERSION="$version" "$nfpm" package --config packaging/nfpm.yaml --packager rpm \
-  --target "dist/neuroalyzer-${version}-1.x86_64.rpm"
+  --target "dist/neuralyzer-${version}-1.x86_64.rpm"
 
 rm -rf dist/stage
 (cd dist && sha256sum *.tar.gz *.deb *.rpm > linux.sha256 && cat linux.sha256)

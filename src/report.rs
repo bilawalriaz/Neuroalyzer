@@ -75,7 +75,7 @@ pub struct Engines {
 
 #[derive(Serialize)]
 pub struct Report {
-    pub neuroalyzer_version: String,
+    pub neuralyzer_version: String,
     pub mode: String,
     pub started_at: String,
     pub elapsed_secs: f64,
@@ -155,7 +155,7 @@ impl Report {
             });
         }
         Report {
-            neuroalyzer_version: env!("CARGO_PKG_VERSION").into(),
+            neuralyzer_version: env!("CARGO_PKG_VERSION").into(),
             mode: mode.into(),
             started_at: started.to_rfc3339(),
             elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
@@ -190,7 +190,7 @@ impl Report {
 
     pub fn to_markdown(&self) -> String {
         let mut s = String::new();
-        let _ = writeln!(s, "# Neuroalyzer {} report\n", self.mode);
+        let _ = writeln!(s, "# Neuralyzer {} report\n", self.mode);
         let _ = writeln!(
             s,
             "Started {}. Took {:.1}s for {} ({:.1} MB/s).\n",
@@ -290,7 +290,7 @@ impl Report {
 
     pub fn print_summary(&self) {
         let e = eprintln_styled;
-        e(&format!("{}", style(format!("Neuroalyzer {}", self.mode)).bold()));
+        e(&format!("{}", style(format!("Neuralyzer {}", self.mode)).bold()));
         let tools: Vec<String> = self
             .tools
             .iter()

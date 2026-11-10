@@ -1,19 +1,23 @@
-# Neuroalyzer
+# Neuralyzer
 
-[![CI](https://github.com/bilawalriaz/neuroalyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/bilawalriaz/neuroalyzer/actions/workflows/ci.yml)
+[![CI](https://github.com/bilawalriaz/neuralyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/bilawalriaz/neuralyzer/actions/workflows/ci.yml)
 
-Neuroalyzer finds the session data that AI coding agents keep on disk: Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot (VS Code chat history and Copilot CLI), OpenCode, Hermes Agent, OpenClaw, Factory Droid, pi and omp (oh-my-pi). It copies every file it is about to change into an encrypted backup, redacts secrets and personal data in place, and prints a report. `neuroalyzer restore` puts the files back from a backup.
+<img src="assets/neuralyzer.png" alt="Agent J holding the neuralyzer in Men in Black" width="640">
+
+The neuralyzer from *Men in Black*: flash it, and the memory is gone.
+
+Neuralyzer finds the session data that AI coding agents keep on disk: Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot (VS Code chat history and Copilot CLI), OpenCode, Hermes Agent, OpenClaw, Factory Droid, pi and omp (oh-my-pi). It copies every file it is about to change into an encrypted backup, redacts secrets and personal data in place, and prints a report. `neuralyzer restore` puts the files back from a backup.
 
 It is a single binary for Windows, macOS and Linux. It makes no network calls, apart from the optional one-time download of the NER model.
 
 ## Quick start
 
 ```sh
-neuroalyzer list                  # what was found, where, and past backups
-neuroalyzer scan                  # report what would change, change nothing
-neuroalyzer clean                 # back up (encrypted), then redact in place
-neuroalyzer restore               # pick a backup and put the files back
-neuroalyzer restore <NAME>        # restore a specific backup
+neuralyzer list                  # what was found, where, and past backups
+neuralyzer scan                  # report what would change, change nothing
+neuralyzer clean                 # back up (encrypted), then redact in place
+neuralyzer restore               # pick a backup and put the files back
+neuralyzer restore <NAME>        # restore a specific backup
 ```
 
 Close your agents before running `clean`. Files modified in the last 120 seconds are skipped, which catches most active sessions but not all of them. `clean` asks for a backup password, then asks you to confirm before it changes anything. The password rules are in [docs/SAFETY.md](docs/SAFETY.md).
@@ -22,49 +26,57 @@ Close your agents before running `clean`. Files modified in the last 120 seconds
 
 ### Prebuilt binaries
 
-Download from the [latest release](https://github.com/bilawalriaz/neuroalyzer/releases/latest). Every release has a `SHA256SUMS.txt` file to check the download against.
+Download from the [latest release](https://github.com/bilawalriaz/neuralyzer/releases/latest). Every release has a `SHA256SUMS.txt` file to check the download against.
 
 Linux builds are published as a portable tarball, a `.deb` and an `.rpm`, all containing the same binary. It needs glibc 2.35 or newer, so it runs on Ubuntu 22.04 and later, Fedora 36 and later, Debian 12 and later, and their derivatives.
 
 Ubuntu and Debian:
 
 ```sh
-gh release download --repo bilawalriaz/neuroalyzer --pattern '*.deb'
-sudo apt install ./neuroalyzer_*_amd64.deb
+gh release download --repo bilawalriaz/neuralyzer --pattern '*.deb'
+sudo apt install ./neuralyzer_*_amd64.deb
 ```
 
 Fedora and RHEL:
 
 ```sh
-gh release download --repo bilawalriaz/neuroalyzer --pattern '*.rpm'
-sudo dnf install ./neuroalyzer-*.x86_64.rpm
+gh release download --repo bilawalriaz/neuralyzer --pattern '*.rpm'
+sudo dnf install ./neuralyzer-*.x86_64.rpm
 ```
 
 Portable tarball (Linux x86_64 shown; macOS users get a `-darwin.tar.gz` and Windows a `.zip`):
 
 ```sh
-gh release download --repo bilawalriaz/neuroalyzer --pattern '*x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS.txt
+gh release download --repo bilawalriaz/neuralyzer --pattern '*x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS.txt
 sha256sum --ignore-missing -c SHA256SUMS.txt
-tar -xzf neuroalyzer-*-x86_64-unknown-linux-gnu.tar.gz neuroalyzer && sudo mv neuroalyzer /usr/local/bin/
+tar -xzf neuralyzer-*-x86_64-unknown-linux-gnu.tar.gz neuralyzer && sudo mv neuralyzer /usr/local/bin/
 ```
 
 Targets: `x86_64-unknown-linux-gnu` (`.tar.gz`, `.deb`, `.rpm`), `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` (a `.zip`).
 
-### Upgrading from sesscrub
+### Upgrading from an older name
 
-2.0.0 renames the project. The binary is now `neuroalyzer`, and the config file and data directory moved to `~/.config/neuroalyzer` and `~/.local/share/neuroalyzer` (`~/Library/Application Support/neuroalyzer` on macOS, `%LOCALAPPDATA%\neuroalyzer` on Windows). Backups made by `sesscrub` keep their old names and old data directory, so the new binary does not list or restore them. Keep the old binary until you no longer need those backups.
+The project has been renamed twice. Each rename moves the binary, the environment variables, the config file and the data directory, and creates a fresh HMAC key, so tokens from older runs no longer match:
+
+| Version | Name | Binary | Config and data directory |
+|---|---|---|---|
+| 1.x | sesscrub | `sesscrub` | `sesscrub` |
+| 2.x | neuroalyzer | `neuroalyzer` | `neuroalyzer` |
+| 3.x | neuralyzer | `neuralyzer` | `neuralyzer` |
+
+Older backups keep their old names and stay in the old data directory, so the new binary does not list or restore them, and a password saved in the OS keychain under the old name is not found. Keep the old binary until you no longer need those backups, or point `NEURALYZER_DATA_DIR` at the old directory to restore from it.
 
 ### Build from source
 
 You need Rust 1.89 or newer. Run `rustup update` if your version is older.
 
 ```sh
-git clone https://github.com/bilawalriaz/neuroalyzer
-cd neuroalyzer
+git clone https://github.com/bilawalriaz/neuralyzer
+cd neuralyzer
 cargo build --release
 ```
 
-The binary is at `target/release/neuroalyzer`, or `neuroalyzer.exe` on Windows.
+The binary is at `target/release/neuralyzer`, or `neuralyzer.exe` on Windows.
 
 The default build includes the `ner` feature, which pulls in ONNX Runtime. The `ort` crate downloads a prebuilt ONNX Runtime library (from pyke's CDN, `parcel.pyke.io`) during the build. If that download is blocked by a locked-down network or proxy, build without the feature:
 
@@ -78,12 +90,12 @@ Everything works except NER, which finds names, addresses and organisations.
 
 | Command | What it does |
 |---|---|
-| `neuroalyzer list` | Shows the tools found, where they are, how much data there is, and past backups. |
-| `neuroalyzer scan` | Reports what would be redacted. Writes report files and changes nothing else. |
-| `neuroalyzer clean` | Backs up the affected files, then redacts them in place. |
-| `neuroalyzer restore [ARCHIVE] [--force]` | Restores files from a backup. With no name, lists the backups newest first and asks which one to restore. |
-| `neuroalyzer key save` / `key clear` | Stores or removes the backup password in the OS keychain. |
-| `neuroalyzer model fetch` | Downloads the NER model now, so later runs work offline. |
+| `neuralyzer list` | Shows the tools found, where they are, how much data there is, and past backups. |
+| `neuralyzer scan` | Reports what would be redacted. Writes report files and changes nothing else. |
+| `neuralyzer clean` | Backs up the affected files, then redacts them in place. |
+| `neuralyzer restore [ARCHIVE] [--force]` | Restores files from a backup. With no name, lists the backups newest first and asks which one to restore. |
+| `neuralyzer key save` / `key clear` | Stores or removes the backup password in the OS keychain. |
+| `neuralyzer model fetch` | Downloads the NER model now, so later runs work offline. |
 
 Exit codes are 0 for a clean result, 1 when `scan` finds something, and 2 for an error. `restore` also exits with 2 when it skipped any file.
 
@@ -128,7 +140,7 @@ Global flags are `-v` (repeat for more detail), `-q`, `--no-color` and `--config
 
 ## What it finds
 
-Neuroalyzer uses three detection layers.
+Neuralyzer uses three detection layers.
 
 Secrets come from the gitleaks v8.30.1 default ruleset, vendored into the binary, where 216 rules apply. They also cover connection strings with passwords, Bearer tokens, and key=value pairs near names such as key, token, secret or password, checked with an entropy test. Exact values of secret-looking keys from `.env` files in the project directories the sessions point to are included too.
 
@@ -156,7 +168,7 @@ Each redacted value becomes a token such as `[EMAIL:3f9a1c2e]`. The eight hex ch
 
 ## What gets touched
 
-The tables below show where Neuroalyzer looks. Exact globs are in `src/discovery.rs`, and [docs/FORMATS.md](docs/FORMATS.md) lists the formats and their upstream sources.
+The tables below show where Neuralyzer looks. Exact globs are in `src/discovery.rs`, and [docs/FORMATS.md](docs/FORMATS.md) lists the formats and their upstream sources.
 
 | Tool | Where it looks | What it reads |
 |---|---|---|
@@ -178,15 +190,15 @@ The user data directory is `~/Library/Application Support` on macOS, `~/.config`
 
 `scan` reads files and writes nothing except the report. `clean` edits only the files that contain something to redact. Inside a JSON file, only string values are changed. Keys and the rest of the file stay byte-identical.
 
-Neuroalyzer keeps its own files in the data directory:
+Neuralyzer keeps its own files in the data directory:
 
 | OS | Data directory |
 |---|---|
-| macOS | `~/Library/Application Support/neuroalyzer` |
-| Linux | `~/.local/share/neuroalyzer` |
-| Windows | `%LOCALAPPDATA%\neuroalyzer` |
+| macOS | `~/Library/Application Support/neuralyzer` |
+| Linux | `~/.local/share/neuralyzer` |
+| Windows | `%LOCALAPPDATA%\neuralyzer` |
 
-It holds `archives/` (backups), `reports/`, `models/` (the NER model) and `hmac.key`. Set `NEUROALYZER_DATA_DIR` to use another location.
+It holds `archives/` (backups), `reports/`, `models/` (the NER model) and `hmac.key`. Set `NEURALYZER_DATA_DIR` to use another location.
 
 ## Safety model
 
@@ -213,22 +225,22 @@ cp -Rp "$HOME/Library/Application Support/Code/User/workspaceStorage" \
        "$HOME/Library/Application Support/Code/User/globalStorage" \
        "$HOME/scrub-test/Library/Application Support/Code/User/"
 
-neuroalyzer list --root ~/scrub-test
-neuroalyzer scan --root ~/scrub-test
-neuroalyzer clean --root ~/scrub-test
-neuroalyzer restore <NAME>
+neuralyzer list --root ~/scrub-test
+neuralyzer scan --root ~/scrub-test
+neuralyzer clean --root ~/scrub-test
+neuralyzer restore <NAME>
 ```
 
-With `--root`, Neuroalyzer checks all three OS layouts under that directory, and environment variable overrides are ignored. Project directories named in the sessions are still read, read-only, for `.env` values if they exist on this machine. Backups and reports still go to the real data directory, so `neuroalyzer restore` lists them from there.
+With `--root`, Neuralyzer checks all three OS layouts under that directory, and environment variable overrides are ignored. Project directories named in the sessions are still read, read-only, for `.env` values if they exist on this machine. Backups and reports still go to the real data directory, so `neuralyzer restore` lists them from there.
 
 ## Configuration
 
-Neuroalyzer works without a config file. To change the defaults, such as the tools included, the number of backups kept, the allowlist, custom patterns or the NER threshold, see [docs/CONFIG.md](docs/CONFIG.md).
+Neuralyzer works without a config file. To change the defaults, such as the tools included, the number of backups kept, the allowlist, custom patterns or the NER threshold, see [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Limitations
 
 - On macOS and Linux, a file that another program has open, but has not locked, cannot be detected. Close the agent first.
-- Copies outside the files Neuroalyzer edits are out of reach. This includes filesystem snapshots and backups such as Time Machine, SSD remnants, and SQLite rollback journals that were already deleted.
+- Copies outside the files Neuralyzer edits are out of reach. This includes filesystem snapshots and backups such as Time Machine, SSD remnants, and SQLite rollback journals that were already deleted.
 - Detection is based on patterns and the model. Review the report before you rely on a clean run.
 - NER is English-centric.
 - IPv6 addresses are not detected.
@@ -236,7 +248,7 @@ Neuroalyzer works without a config file. To change the defaults, such as the too
 - SQLite full-text index tables are skipped, and the report notes it.
 - In VS Code's `state.vscdb`, only chat-related rows are touched.
 - Zstd-compressed Codex rollouts are rewritten at compression level 3, so a cleaned `.jsonl.zst` is not byte-identical to one Codex would write. `restore` puts the original bytes back.
-- Formats were researched on 2026-11-09. When a file does not match the expected layout, Neuroalyzer falls back to generic handling and lists the file under "format drift" in the report.
+- Formats were researched on 2026-11-09. When a file does not match the expected layout, Neuralyzer falls back to generic handling and lists the file under "format drift" in the report.
 
 ## Development
 
@@ -247,8 +259,8 @@ See [AGENTS.md](AGENTS.md) for the layout, how to add a new agent, and how relea
 The NER test needs the model in a local directory:
 
 ```sh
-NEUROALYZER_MODEL_DIR=/some/dir neuroalyzer model fetch
-NEUROALYZER_TEST_MODEL_DIR=/some/dir cargo test --release --test ner
+NEURALYZER_MODEL_DIR=/some/dir neuralyzer model fetch
+NEURALYZER_TEST_MODEL_DIR=/some/dir cargo test --release --test ner
 ```
 
 ## Speed
@@ -257,8 +269,8 @@ Without NER, scanning spreads over every core, with the biggest files started fi
 
 NER is experimental and far slower. It runs a transformer on every unique chunk of prose, once per run: all files are read first, chunks are deduplicated across the whole corpus, and the unique ones go to a pool of model workers (one per physical core by default). The same M3 Pro does about 60 chunks per second, so a large first run takes hours. `-v` prints how many unique chunks a run has to infer. Use `--no-ner` for fast runs, and `--low-priority` for a long NER run in the background. [docs/NER_PERFORMANCE.md](docs/NER_PERFORMANCE.md) has the measurements and what is left to speed up.
 
-To see the numbers for your own data, time `neuroalyzer scan --root` on a copy (see "Testing on a copy"), or run `bench/bench.py`, which also records CPU use, peak memory and NER chunk rates.
+To see the numbers for your own data, time `neuralyzer scan --root` on a copy (see "Testing on a copy"), or run `bench/bench.py`, which also records CPU use, peak memory and NER chunk rates.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE). Third-party components: the gitleaks rules are MIT licensed, and the GLiNER model is Apache-2.0, published by knowledgator.
+MIT. See [LICENSE](LICENSE). Third-party components: the gitleaks rules are MIT licensed, and the GLiNER model is Apache-2.0, published by knowledgator. The README image is a still from *Men in Black* (1997), used for identification only; it is not covered by the MIT licence.

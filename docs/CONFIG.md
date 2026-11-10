@@ -1,16 +1,16 @@
 # Configuration
 
-Neuroalyzer reads an optional TOML file. Without one, it uses the defaults. Command-line flags override the config where both set the same thing, as the reference below notes.
+Neuralyzer reads an optional TOML file. Without one, it uses the defaults. Command-line flags override the config where both set the same thing, as the reference below notes.
 
 ## Where the file lives
 
 | OS | Default path |
 |---|---|
-| macOS | `~/Library/Application Support/neuroalyzer/config.toml` |
-| Linux | `~/.config/neuroalyzer/config.toml` |
-| Windows | `%APPDATA%\neuroalyzer\config.toml` |
+| macOS | `~/Library/Application Support/neuralyzer/config.toml` |
+| Linux | `~/.config/neuralyzer/config.toml` |
+| Windows | `%APPDATA%\neuralyzer\config.toml` |
 
-To use another file, pass `--config FILE` or set `NEUROALYZER_CONFIG`. The flag takes precedence over the variable. `--config` must point at an existing file, and Neuroalyzer stops with an error if it does not. A missing file at the default path, or at the path in `NEUROALYZER_CONFIG`, means the defaults are used. Run with `-v` to see which file was loaded.
+To use another file, pass `--config FILE` or set `NEURALYZER_CONFIG`. The flag takes precedence over the variable. `--config` must point at an existing file, and Neuralyzer stops with an error if it does not. A missing file at the default path, or at the path in `NEURALYZER_CONFIG`, means the defaults are used. Run with `-v` to see which file was loaded.
 
 The file is strict. An unknown key or section is an error, and the message names the file. Check spelling when a run fails after you edit the config.
 
@@ -80,8 +80,8 @@ Write regexes as TOML literal strings (single quotes), so backslashes need no es
 | `[defaults]` | `also` | list of paths | empty | Added to any `--also` paths. |
 | `[defaults]` | `ner` | boolean | `true` in default builds | `--ner` and `--no-ner` override it. |
 | `[defaults]` | `keep` | integer | `5` | `--keep` overrides it. Values below 1 keep one backup. |
-| `[defaults]` | `threads` | string | `auto` (every logical CPU) | Scan threads: a number, `max`, `half` or `p-cores`. `-j` and `NEUROALYZER_THREADS` override it. |
-| `[defaults]` | `low_priority` | boolean | `false` | Background QoS on macOS, nice 10 on Linux, below-normal on Windows. `--low-priority` and `NEUROALYZER_LOW_PRIORITY` override it. |
+| `[defaults]` | `threads` | string | `auto` (every logical CPU) | Scan threads: a number, `max`, `half` or `p-cores`. `-j` and `NEURALYZER_THREADS` override it. |
+| `[defaults]` | `low_priority` | boolean | `false` | Background QoS on macOS, nice 10 on Linux, below-normal on Windows. `--low-priority` and `NEURALYZER_LOW_PRIORITY` override it. |
 | `[allowlist]` | `exact` | list of strings | empty | Values that are never redacted. |
 | `[allowlist]` | `regex` | list of strings | empty | Findings whose value matches any regex are kept as they are. |
 | `[[patterns]]` | `name` | string | required | Shown in the report as `custom:<name>`. |
@@ -103,18 +103,18 @@ Each section is optional, and so is every key within it. Where a flag, a variabl
 
 | Variable | Effect |
 |---|---|
-| `NEUROALYZER_CONFIG` | Config file to use instead of the default path. |
-| `NEUROALYZER_DATA_DIR` | Data directory for backups, reports, the model and `hmac.key`. |
-| `NEUROALYZER_MODEL_DIR` | Directory for the NER model. |
-| `NEUROALYZER_NO_DOWNLOAD` | Never download the NER model. |
-| `NEUROALYZER_THREADS` | Scan threads, like `-j`. |
-| `NEUROALYZER_LOW_PRIORITY` | `true` to run at low priority, like `--low-priority`. |
-| `NEUROALYZER_NER_SESSIONS`, `NEUROALYZER_NER_THREADS`, `NEUROALYZER_NER_BATCH`, `NEUROALYZER_NER_DEVICE` | Like the `--ner-*` flags. |
-| `NEUROALYZER_NO_KEYRING` | Skip the OS keychain when looking for the backup password. |
-| `NEUROALYZER_PASSWORD` | Backup password. Neuroalyzer prints a warning when it is used. See [SAFETY.md](SAFETY.md). |
+| `NEURALYZER_CONFIG` | Config file to use instead of the default path. |
+| `NEURALYZER_DATA_DIR` | Data directory for backups, reports, the model and `hmac.key`. |
+| `NEURALYZER_MODEL_DIR` | Directory for the NER model. |
+| `NEURALYZER_NO_DOWNLOAD` | Never download the NER model. |
+| `NEURALYZER_THREADS` | Scan threads, like `-j`. |
+| `NEURALYZER_LOW_PRIORITY` | `true` to run at low priority, like `--low-priority`. |
+| `NEURALYZER_NER_SESSIONS`, `NEURALYZER_NER_THREADS`, `NEURALYZER_NER_BATCH`, `NEURALYZER_NER_DEVICE` | Like the `--ner-*` flags. |
+| `NEURALYZER_NO_KEYRING` | Skip the OS keychain when looking for the backup password. |
+| `NEURALYZER_PASSWORD` | Backup password. Neuralyzer prints a warning when it is used. See [SAFETY.md](SAFETY.md). |
 | `NO_COLOR` | Turn off coloured output. |
 
-These variables change where Neuroalyzer looks for session data. They are ignored when `--root` is set.
+These variables change where Neuralyzer looks for session data. They are ignored when `--root` is set.
 
 | Variable | Location it affects |
 |---|---|

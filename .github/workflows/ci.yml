@@ -48,7 +48,7 @@ jobs:
         run: cargo build --workspace --locked
       - name: Test workspace
         env:
-          NEUROALYZER_NO_KEYRING: "1"
+          NEURALYZER_NO_KEYRING: "1"
         run: cargo test --workspace --locked
       - name: Build without default features (no ONNX/NER)
         run: cargo build --locked --no-default-features
