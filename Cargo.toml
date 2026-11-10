@@ -41,7 +41,7 @@ regex = "1.13.1"
 rpassword = "7.5.4"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
 sha2 = "0.11.1"
 tar = "0.4.46"
 tempfile = "3.27.0"

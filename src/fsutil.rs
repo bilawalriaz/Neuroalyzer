@@ -192,7 +192,9 @@ pub fn rewrite_checked<T>(
         return Ok(Rewrite::Changed);
     }
     on_staged(&after)?;
-    persist(tmp, p)?;
+    if !persist_when(tmp, p, || matches_for_replace(p, expected))? {
+        return Ok(Rewrite::Changed);
+    }
     sync_dir(p.parent().context("file has no parent dir")?);
     Ok(Rewrite::Done {
         value,
@@ -242,11 +244,17 @@ pub fn install_verified(
 }
 
 fn persist(tmp: tempfile::NamedTempFile, p: &Path) -> Result<()> {
-    let mut tmp = tmp;
+    persist_when(tmp, p, || Ok(true)).map(|_| ())
+}
+
+fn persist_when(mut tmp: tempfile::NamedTempFile, p: &Path, mut ready: impl FnMut() -> Result<bool>) -> Result<bool> {
     // Windows: the target may be briefly held by an indexer or AV scanner.
     for attempt in 0..5 {
+        if !ready()? {
+            return Ok(false);
+        }
         match tmp.persist(p) {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(true),
             Err(e) => {
                 if attempt == 4 {
                     return Err(e.error).with_context(|| format!("couldn't replace {}", p.display()));
@@ -259,11 +267,36 @@ fn persist(tmp: tempfile::NamedTempFile, p: &Path) -> Result<()> {
     unreachable!()
 }
 
-pub fn sync_dir(_dir: &Path) {
-    #[cfg(unix)]
-    if let Ok(d) = File::open(_dir) {
-        let _ = d.sync_all();
+/// The source must remain in place on error when it is an undo commit witness.
+pub(crate) fn replace_checked(source: &Path, target: &Path, expected: &str) -> Result<bool> {
+    for attempt in 0..5 {
+        if !matches_for_replace(target, expected)? {
+            return Ok(false);
+        }
+        match std::fs::rename(source, target) {
+            Ok(()) => return Ok(true),
+            Err(e) if !cfg!(windows) || attempt == 4 => return Err(e.into()),
+            Err(_) => std::thread::sleep(Duration::from_millis(200 * (attempt + 1))),
+        }
     }
+    unreachable!()
+}
+
+fn matches_for_replace(target: &Path, expected: &str) -> Result<bool> {
+    if let Some(reason) = lock_reason(target) {
+        anyhow::bail!("{reason}");
+    }
+    Ok(hash_file(target)?.as_deref() == Some(expected))
+}
+
+pub(crate) fn sync_required(_dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    File::open(_dir)?.sync_all()?;
+    Ok(())
+}
+
+pub fn sync_dir(dir: &Path) {
+    let _ = sync_required(dir);
 }
 
 #[cfg(test)]

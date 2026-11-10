@@ -135,3 +135,44 @@ pub fn diff_snap(a: &BTreeMap<PathBuf, Vec<u8>>, b: &BTreeMap<PathBuf, Vec<u8>>)
     }
     d
 }
+
+pub fn recover(fx: &Fixture, archive: &str) -> BTreeMap<PathBuf, Vec<u8>> {
+    let dest = fx.dir.path().join("recovered");
+    let output = fx.run(&[
+        "restore",
+        archive,
+        "--into",
+        dest.to_str().unwrap(),
+        "--password-file",
+        &fx.pw_s(),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dest.join("manifest.json")).unwrap()).unwrap();
+    assert!(
+        manifest.get("undo_identity").is_none(),
+        "recovery manifest contains the undo key"
+    );
+    manifest["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                PathBuf::from(entry["path"].as_str().unwrap()),
+                std::fs::read(dest.join(entry["id"].as_str().unwrap())).unwrap(),
+            )
+        })
+        .collect()
+}
+
+pub fn assert_recovered(fx: &Fixture, archive: &str, before: &BTreeMap<PathBuf, Vec<u8>>) {
+    let live = fx.snapshot();
+    let recovered = recover(fx, archive);
+    let mut rebuilt = live.clone();
+    rebuilt.extend(recovered);
+    for (path, original) in before {
+        assert_eq!(rebuilt.get(path), Some(original), "{}", path.display());
+    }
+    assert_eq!(fx.snapshot(), live, "recovery changed the live files");
+}

@@ -4,7 +4,7 @@ A guide for people and coding agents who use or work on neuralyzer. Read it befo
 
 ## What Neuralyzer is
 
-Neuralyzer is a single Rust binary. It finds the session data that AI coding agents keep on disk, makes an encrypted backup of every file it is about to change, then redacts secrets and personal data in place. `restore` puts the original bytes back.
+Neuralyzer is a single Rust binary. It finds the session data that AI coding agents keep on disk, makes an encrypted backup of every file it is about to change, then redacts secrets and personal data in place. `restore` undoes Copilot CLI event edits. `restore --into` recovers full files into a new folder.
 
 Supported tools (`--only` names): `claude`, `codex`, `gemini`, `copilot`, `opencode`, `hermes`, `openclaw`, `droid`, `pi`, `omp`.
 
@@ -34,7 +34,7 @@ neuralyzer list                         # what exists, per tool
 neuralyzer scan                         # read-only report, exit 1 if anything found
 neuralyzer scan --only claude,codex     # limit to some tools
 neuralyzer clean                        # backup (asks for a password) -> redact
-neuralyzer restore                      # list backups; restore <NAME> to undo
+neuralyzer restore                      # list backups; restore <NAME> to undo Copilot CLI edits
 ```
 
 - Close the agents first. Files modified in the last 120 s are skipped (`--min-age`).
@@ -70,7 +70,8 @@ Dev builds compile dependencies at `opt-level = 2`, so tests run at a usable spe
 | `src/detect/` | Detectors: vendored gitleaks rules, PII validators (Luhn, mod 97, mod 11, ...), tabular heuristic. |
 | `src/ner.rs`, `src/prose.rs` | GLiNER NER (feature `ner`) and the decision about which strings count as prose. |
 | `src/jsonscan.rs` | Byte-preserving JSON string scanner. Only string values change, and every other byte stays identical. |
-| `src/backup.rs`, `src/password.rs` | age-encrypted tar.zst archives, after-hash sidecar, journal, restore. |
+| `src/backup.rs`, `src/password.rs` | age-encrypted tar.zst archives, after-hash sidecar, journal, recovery. |
+| `src/undo.rs` | Copilot CLI edit records, commit receipts and live restore. |
 | `src/run.rs` | Orchestrates `scan` / `clean` / `restore`: locking, active-file checks, check-then-act writes. |
 | `src/report.rs`, `src/token.rs` | Reports, and HMAC tokens such as `[EMAIL:3f9a1c2e]`. |
 | `rules/` | Vendored gitleaks config. |
@@ -90,9 +91,9 @@ Dev builds compile dependencies at `opt-level = 2`, so tests run at a usable spe
    - Add a `Base` variant and its arm in `Env::bases`. Push the default home-relative dir. Put env-var overrides inside `if !self.rooted`, because `--root` must ignore the environment.
    - Add `loc(...)` entries to `REGISTRY`. Use a precise glob for each kind of file. **Never glob credential stores** (`auth.json`, OAuth files, `credentials.sqlite`, `.env` in the agent home). Redacting a token there logs the user out.
    - Reuse `Schema::Generic` unless you need a drift check or project-dir hints. If you add a `Schema` variant, handle it in `Schema::name`, `engine::schema_drift`, and optionally in `known::project_dirs` (extract `cwd`) and the `expected_ok` check in `sqlite.rs`.
-3. **New on-disk encodings** need a `Format` variant. `JsonlZst` is the example: it decodes in `Engine::process_zst`, reuses the JSONL path and re-encodes. `run::fmt_name` and `sniff_format` (for `--also`) need entries too. The backup always stores the raw on-disk bytes, so restore stays byte-identical.
+3. **New on-disk encodings** need a `Format` variant. `JsonlZst` is the example: it decodes in `Engine::process_zst`, reuses the JSONL path and re-encodes. `run::fmt_name` and `sniff_format` (for `--also`) need entries too. The backup always stores the raw on-disk bytes, so recovery stays byte-identical.
 4. **SQLite**: FTS virtual tables and their shadow tables are skipped. Check that the app keeps its FTS in sync with triggers or rebuilds it. External-content FTS without triggers would go stale.
-5. **Test**: add the tool to `tests/agents.rs`. Plant a value, `clean`, assert it is gone from the raw bytes and the file still parses, `restore`, and assert byte-identical. Then do a quick real check: `cargo build --release && ./target/release/neuralyzer scan --only <tool> --no-ner`, and look at the "format drift" section.
+5. **Test**: add the tool to `tests/agents.rs`. Plant a value, `clean`, assert it is gone from the raw bytes and the file still parses, `restore --into <FOLDER>`, and compare the recovered bytes. Then do a quick real check: `cargo build --release && ./target/release/neuralyzer scan --only <tool> --no-ner`, and look at the "format drift" section.
 6. **Docs**: update the README ("What gets touched" and the intro list), `--only` help and `ABOUT` in `src/main.rs`, env vars in `docs/CONFIG.md`, and the tool list in this file.
 
 ### Invariants: don't break these

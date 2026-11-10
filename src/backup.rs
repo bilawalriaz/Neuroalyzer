@@ -11,7 +11,7 @@
 //! keeps the archive itself write-once and verifiable before any session file
 //! is touched.
 
-use age::secrecy::SecretString;
+use age::secrecy::{ExposeSecret, SecretString};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -40,9 +40,19 @@ pub struct Entry {
 #[derive(Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u32,
+    #[serde(default)]
+    pub run_id: String,
     pub created_at: String,
     pub neuralyzer_version: String,
     pub entries: Vec<Entry>,
+}
+
+// The private undo key lives only inside the encrypted archive manifest.
+#[derive(Serialize, Deserialize)]
+struct ArchiveManifest<M, T> {
+    #[serde(flatten)]
+    manifest: M,
+    undo_identity: Option<T>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -69,7 +79,7 @@ fn encryptor(pw: &SecretString) -> age::Encryptor {
     age::Encryptor::with_user_passphrase(pw.clone())
 }
 
-fn decrypt_reader<R: Read>(r: R, pw: &SecretString) -> Result<impl Read> {
+fn decrypt_reader<R: Read>(r: R, pw: &SecretString) -> Result<impl Read + use<R>> {
     let d = age::Decryptor::new(r).context("this doesn't look like a neuralyzer archive")?;
     let id = age::scrypt::Identity::new(pw.clone());
     d.decrypt(std::iter::once(&id as &dyn age::Identity))
@@ -177,7 +187,7 @@ pub fn create(
     pw: &SecretString,
     dir: &Path,
     progress: &indicatif::ProgressBar,
-) -> Result<(PathBuf, Manifest)> {
+) -> Result<(PathBuf, Manifest, age::x25519::Identity)> {
     crate::paths::ensure_private_dir(dir)?;
     let mut entries = vec![];
     for (i, s) in sources.iter().enumerate() {
@@ -195,8 +205,13 @@ pub fn create(
             before,
         });
     }
+    let identity = age::x25519::Identity::generate();
+    let key = identity.to_string();
+    let mut run_id = [0u8; 16];
+    rand::fill(&mut run_id);
     let manifest = Manifest {
         version: 1,
+        run_id: hex::encode(run_id),
         created_at: chrono::Local::now().to_rfc3339(),
         neuralyzer_version: env!("CARGO_PKG_VERSION").into(),
         entries,
@@ -210,7 +225,10 @@ pub fn create(
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as u32;
         z.multithread(threads.clamp(1, 8))?;
         let mut tar = tar::Builder::new(z);
-        let mj = serde_json::to_vec_pretty(&manifest)?;
+        let mj = zeroize::Zeroizing::new(serde_json::to_vec_pretty(&ArchiveManifest {
+            manifest: &manifest,
+            undo_identity: Some(key.expose_secret()),
+        })?);
         let mut h = tar::Header::new_gnu();
         h.set_size(mj.len() as u64);
         h.set_mode(0o600);
@@ -253,8 +271,8 @@ pub fn create(
         return Err(e.context("backup verification failed, so no session files were changed"));
     }
     std::fs::rename(&partial, &final_path)?;
-    crate::fsutil::sync_dir(dir);
-    Ok((final_path, manifest))
+    crate::fsutil::sync_required(dir)?;
+    Ok((final_path, manifest, identity))
 }
 
 /// Re-open, decrypt and check the entry count and every hash.
@@ -269,8 +287,10 @@ pub fn verify(path: &Path, pw: &SecretString, expected: &Manifest) -> Result<()>
         let mut ent = ent?;
         let name = ent.path()?.to_string_lossy().to_string();
         if name == "manifest.json" {
-            let m: Manifest = serde_json::from_reader(&mut ent)?;
-            manifest_ok = m.entries.len() == expected.entries.len();
+            let (m, identity) = decode_manifest(&mut ent)?;
+            manifest_ok = m.run_id == expected.run_id
+                && m.entries.len() == expected.entries.len()
+                && (m.run_id.is_empty() || identity.is_some());
             continue;
         }
         let e = expected
@@ -291,6 +311,110 @@ pub fn verify(path: &Path, pw: &SecretString, expected: &Manifest) -> Result<()>
     Ok(())
 }
 
+pub(crate) fn write_undo<T: Serialize + serde::de::DeserializeOwned>(
+    path: &Path,
+    record: &T,
+    identity: &age::x25519::Identity,
+) -> Result<()> {
+    let dir = path.parent().context("undo record has no parent")?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    {
+        let recipient = identity.to_public();
+        let encryptor = age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))?;
+        let mut encrypted = encryptor.wrap_output(tmp.as_file_mut())?;
+        serde_json::to_writer(&mut encrypted, record).context("couldn't encode undo record")?;
+        encrypted.finish()?.sync_all()?;
+    }
+    read_undo::<T>(tmp.path(), identity)?;
+    tmp.persist_noclobber(path).map_err(|e| e.error)?;
+    crate::fsutil::sync_required(dir)?;
+    Ok(())
+}
+
+pub(crate) fn read_undo<T: serde::de::DeserializeOwned>(path: &Path, identity: &age::x25519::Identity) -> Result<T> {
+    let decryptor = age::Decryptor::new(BufReader::new(File::open(path)?))?;
+    let mut decrypted = decryptor.decrypt(std::iter::once(identity as &dyn age::Identity))?;
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    decrypted.read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("invalid undo record"))
+}
+
+fn open_archive(path: &Path, pw: &SecretString) -> Result<tar::Archive<impl Read + use<>>> {
+    let file = File::open(path).with_context(|| format!("couldn't open {}", path.display()))?;
+    let decrypted = decrypt_reader(BufReader::new(file), pw)?;
+    Ok(tar::Archive::new(zstd::Decoder::new(decrypted)?))
+}
+
+fn decode_manifest(reader: impl Read) -> Result<(Manifest, Option<age::x25519::Identity>)> {
+    let ArchiveManifest {
+        manifest,
+        undo_identity,
+    }: ArchiveManifest<Manifest, String> =
+        serde_json::from_reader(reader).map_err(|_| anyhow::anyhow!("the archive manifest is damaged"))?;
+    let identity = undo_identity
+        .map(|key: String| {
+            let key = zeroize::Zeroizing::new(key);
+            key.parse().map_err(|_| anyhow::anyhow!("invalid undo key"))
+        })
+        .transpose()?;
+    Ok((manifest, identity))
+}
+
+fn manifest_from<R: Read>(entries: &mut tar::Entries<'_, R>) -> Result<(Manifest, Option<age::x25519::Identity>)> {
+    let mut entry = entries.next().context("the archive has no manifest")??;
+    anyhow::ensure!(
+        entry.path()?.as_ref() == Path::new("manifest.json"),
+        "the archive has no manifest"
+    );
+    decode_manifest(&mut entry)
+}
+
+pub(crate) fn read_manifest(path: &Path, pw: &SecretString) -> Result<(Manifest, Option<age::x25519::Identity>)> {
+    manifest_from(&mut open_archive(path, pw)?.entries()?)
+}
+
+/// Recover verified originals into a new directory. The manifest maps each
+/// numbered file to its original path, including any SQLite companions.
+pub(crate) fn recover(path: &Path, pw: &SecretString, destination: &Path) -> Result<usize> {
+    let mut archive = open_archive(path, pw)?;
+    let mut entries = archive.entries()?;
+    let (manifest, _) = manifest_from(&mut entries)?;
+    std::fs::create_dir(destination)
+        .with_context(|| format!("couldn't create recovery folder {}", destination.display()))?;
+    crate::paths::ensure_private_dir(destination)?;
+    let files = destination.join("files");
+    std::fs::create_dir(&files)?;
+    let mut count = 0;
+    for item in entries {
+        let mut item = item?;
+        let expected = manifest.entries.get(count).context("unexpected archive entry")?;
+        let id = format!("files/{count:06}");
+        anyhow::ensure!(
+            expected.id == id && item.path()?.as_ref() == Path::new(&id),
+            "unexpected archive entry"
+        );
+        let mut tmp = tempfile::NamedTempFile::new_in(&files)?;
+        let mut reader = HashingReader {
+            inner: &mut item,
+            h: blake3::Hasher::new(),
+        };
+        let size = std::io::copy(&mut reader, tmp.as_file_mut())?;
+        anyhow::ensure!(
+            size == expected.size && reader.h.finalize().to_hex().as_str() == expected.before,
+            "archive entry is damaged"
+        );
+        tmp.as_file().sync_all()?;
+        tmp.persist_noclobber(destination.join(id)).map_err(|e| e.error)?;
+        count += 1;
+    }
+    anyhow::ensure!(count == manifest.entries.len(), "missing archive entries");
+    crate::fsutil::atomic_write(
+        &destination.join("manifest.json"),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    Ok(count)
+}
+
 pub fn write_after(archive: &Path, after: &After, pw: &SecretString) -> Result<()> {
     let p = after_path(archive);
     let tmp = PathBuf::from(format!("{}.partial", p.display()));
@@ -305,7 +429,7 @@ pub fn write_after(archive: &Path, after: &After, pw: &SecretString) -> Result<(
     Ok(())
 }
 
-/// Where restore got its after-hashes from.
+/// Where a reader got the archive's after-hashes from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AfterSource {
     Sidecar,
@@ -389,6 +513,7 @@ pub fn prune(dir: &Path, keep: usize) -> Vec<PathBuf> {
         if std::fs::remove_file(&a.path).is_ok() {
             let _ = std::fs::remove_file(after_path(&a.path));
             let _ = std::fs::remove_file(journal_path(&a.path));
+            let _ = std::fs::remove_dir_all(crate::undo::dir(&a.path));
             removed.push(a.path);
         }
     }
@@ -403,16 +528,8 @@ pub fn prune(dir: &Path, keep: usize) -> Vec<PathBuf> {
 
 // ---------- after-hash journal ----------
 
-/// Crash-safe record of after-redaction hashes, written while `clean` runs.
-///
-/// The encrypted sidecar can only be written once the whole redaction pass is
-/// over. A run that stops before then (Ctrl-C, crash, power loss, disk full)
-/// would leave redacted files with no after-hashes, and restore would then
-/// treat every one of them as edited since cleaning. The journal closes that
-/// gap: each hash is appended and fsynced before the file it describes is
-/// replaced, so it is never behind the disk. It holds only entry ids and
-/// BLAKE3 hashes of redacted content, never file contents, and is owner-only.
-/// It is deleted once the sidecar is safely written.
+/// Retains after-hashes while clean runs. It holds entry IDs and BLAKE3
+/// hashes. Live restore uses separate commit evidence.
 pub struct Journal {
     path: PathBuf,
     f: std::sync::Mutex<File>,
@@ -473,160 +590,6 @@ pub struct RestoreOutcome {
     pub restored: Vec<String>,
     pub unchanged: Vec<String>,
     pub skipped: Vec<(String, String)>,
-    pub after_source: Option<AfterSource>,
-}
-
-pub enum Decision {
-    Restore,
-    Skip(String),
-}
-
-/// Stream the archive and put files back. `decide` is called when a file
-/// changed since cleaning (it returns true to overwrite).
-pub fn restore(
-    archive: &Path,
-    pw: &SecretString,
-    force: bool,
-    mut decide: impl FnMut(&Entry) -> bool,
-    progress: &indicatif::ProgressBar,
-) -> Result<RestoreOutcome> {
-    let (after, source) = load_after(archive, pw)?;
-    let f = File::open(archive).with_context(|| format!("couldn't open {}", archive.display()))?;
-    let dec = decrypt_reader(BufReader::with_capacity(1 << 20, f), pw)?;
-    let z = zstd::Decoder::new(dec)?;
-    let mut ar = tar::Archive::new(z);
-    let mut manifest: Option<Manifest> = None;
-    let mut out = RestoreOutcome {
-        after_source: Some(source),
-        ..Default::default()
-    };
-    let mut group_decision: BTreeMap<usize, Result<bool, String>> = BTreeMap::new();
-    for ent in ar.entries()? {
-        let mut ent = ent?;
-        let name = ent.path()?.to_string_lossy().to_string();
-        if name == "manifest.json" {
-            manifest = Some(serde_json::from_reader(&mut ent).context("the archive manifest is damaged")?);
-            if let Some(m) = &manifest {
-                progress.set_length(m.entries.iter().map(|e| e.size).sum());
-            }
-            continue;
-        }
-        let m = manifest.as_ref().context("the archive has no manifest")?;
-        let e = m
-            .entries
-            .iter()
-            .find(|e| e.id == name)
-            .with_context(|| format!("unexpected archive entry {name}"))?
-            .clone();
-        let target = PathBuf::from(&e.path);
-        let current = crate::fsutil::hash_file(&target)?;
-        // Decide once per group (the main file comes first).
-        let go = group_decision
-            .entry(e.group)
-            .or_insert_with(|| {
-                let group: Vec<&Entry> = m.entries.iter().filter(|x| x.group == e.group).collect();
-                let all_original = group.iter().all(|x| {
-                    crate::fsutil::hash_file(Path::new(&x.path)).ok().flatten().as_deref() == Some(x.before.as_str())
-                });
-                if all_original {
-                    return Ok(false);
-                }
-                // Replacing a file another process holds open loses that
-                // process's later writes (they go to the old inode) or gets
-                // overwritten by them. Never do it, even with --force.
-                if let Some(r) = group.iter().find_map(|x| {
-                    let p = Path::new(&x.path);
-                    if p.exists() { crate::fsutil::lock_reason(p) } else { None }
-                }) {
-                    return Err(format!("{r}; not overwritten. Close the app and run restore again"));
-                }
-                let matches_after = after.as_ref().is_some_and(|a| {
-                    group.iter().all(|x| {
-                        let now = crate::fsutil::hash_file(Path::new(&x.path)).ok().flatten();
-                        a.after.get(&x.id).map(|h| h.as_deref()) == Some(now.as_deref())
-                    })
-                });
-                if matches_after || force {
-                    return Ok(true);
-                }
-                let untouched = source == AfterSource::Sidecar
-                    && after.as_ref().is_some_and(|a| group.iter().all(|x| !a.after.contains_key(&x.id)));
-                if untouched {
-                    return Err(
-                        "clean didn't change this file (it changed on its own after the backup); not overwritten (use --force)"
-                            .into(),
-                    );
-                }
-                Ok(decide(&e))
-            })
-            .clone();
-        if current.as_deref() == Some(e.before.as_str()) {
-            out.unchanged.push(e.path.clone());
-            std::io::copy(&mut ent, &mut std::io::sink())?;
-            progress.inc(e.size);
-            continue;
-        }
-        if go != Ok(true) {
-            let reason = go
-                .err()
-                .unwrap_or_else(|| "changed since cleaning; not overwritten (use --force)".into());
-            out.skipped.push((e.path.clone(), reason));
-            std::io::copy(&mut ent, &mut std::io::sink())?;
-            progress.inc(e.size);
-            continue;
-        }
-        let dir = target.parent().context("bad path in archive")?;
-        std::fs::create_dir_all(dir)?;
-        let mut tmp = tempfile::Builder::new()
-            .prefix(".neuralyzer-restore-")
-            .tempfile_in(dir)?;
-        let mut hr = HashingReader {
-            inner: &mut ent,
-            h: blake3::Hasher::new(),
-        };
-        std::io::copy(&mut hr, tmp.as_file_mut())?;
-        if hr.h.finalize().to_hex().as_str() != e.before {
-            out.skipped.push((
-                e.path.clone(),
-                "archive entry is damaged (hash mismatch); left as is".into(),
-            ));
-            continue;
-        }
-        tmp.as_file().sync_all()?;
-        #[cfg(unix)]
-        if let Some(mode) = e.mode {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(mode & 0o7777))?;
-        }
-        let mt = std::time::UNIX_EPOCH + std::time::Duration::from_secs(e.mtime.max(0) as u64);
-        let _ = tmp.as_file().set_modified(mt);
-        tmp.persist(&target)
-            .map_err(|er| er.error)
-            .with_context(|| format!("couldn't write {}", target.display()))?;
-        if e.role == "main" && m.entries.iter().any(|x| x.group == e.group && x.role != "main") {
-            // A restored SQLite db must not pair with a stale shared-memory index.
-            let _ = std::fs::remove_file(crate::fsutil::shm_path(&target));
-        }
-        if e.role == "main" {
-            for suf in ["-wal", "-journal"] {
-                let in_backup = m
-                    .entries
-                    .iter()
-                    .any(|x| x.group == e.group && x.role == suf.trim_start_matches('-'));
-                let p = PathBuf::from(format!("{}{suf}", target.display()));
-                if !in_backup && p.exists() && crate::discovery::is_sqlite(&target) {
-                    let _ = std::fs::remove_file(&p);
-                    let _ = std::fs::remove_file(crate::fsutil::shm_path(&target));
-                }
-            }
-        }
-        progress.inc(e.size);
-        out.restored.push(e.path.clone());
-    }
-    if manifest.is_none() {
-        bail!("the archive is empty or damaged");
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -740,38 +703,5 @@ mod tests {
         assert_eq!(got.after.len(), 2);
         assert_eq!(got.after["files/000000"].as_deref(), Some("b".repeat(64).as_str()));
         assert_eq!(got.after["files/000001"], None);
-    }
-}
-
-#[cfg(test)]
-mod restore_tests {
-    use super::*;
-
-    /// Regression: clean used to give files it skipped (because they changed
-    /// after the backup) an after-hash equal to their new contents, so restore
-    /// thought they were "as clean left them" and rolled the agent's edits back
-    /// to the older backup copy without asking.
-    #[test]
-    fn restore_leaves_files_clean_never_wrote() {
-        let d = tempfile::tempdir().unwrap();
-        let f = d.path().join("s.jsonl");
-        std::fs::write(&f, b"original\n").unwrap();
-        let pw = SecretString::from("correct horse battery staple 42".to_string());
-        let src = [Source {
-            group: 0,
-            role: "main",
-            tool: "custom".into(),
-            path: f.clone(),
-        }];
-        let pb = indicatif::ProgressBar::hidden();
-        let (a, _) = create(&src, &pw, &d.path().join("archives"), &pb).unwrap();
-        // Clean skipped the file: the agent appended after the backup.
-        std::fs::write(&f, b"original\nnew turn\n").unwrap();
-        write_after(&a, &After::default(), &pw).unwrap();
-        let out = restore(&a, &pw, false, |_| panic!("must not ask"), &pb).unwrap();
-        assert!(out.restored.is_empty());
-        assert_eq!(out.skipped.len(), 1);
-        assert!(out.skipped[0].1.contains("clean didn't change"), "{:?}", out.skipped);
-        assert_eq!(std::fs::read(&f).unwrap(), b"original\nnew turn\n");
     }
 }

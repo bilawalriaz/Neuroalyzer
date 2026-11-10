@@ -154,26 +154,12 @@ fn scan_clean_restore_roundtrip() {
     assert_eq!(o.status.code(), Some(2));
     assert!(stderr(&o).contains("wrong password"), "{}", stderr(&o));
 
-    // Restore gives byte-identical originals.
-    let o = fx.run(&["restore", &archive, "--password-file", &fx.pw_s()]);
-    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    let after = fx.snapshot();
-    let mut diffs = vec![];
-    for (p, b) in &before {
-        match after.get(p) {
-            Some(a) if a == b => {}
-            Some(_) => diffs.push(format!("changed: {}", p.display())),
-            None => diffs.push(format!("missing: {}", p.display())),
-        }
+    assert_recovered(&fx, &archive, &before);
+    // Put the generated originals back for the second clean.
+    for (path, bytes) in &before {
+        std::fs::write(path, bytes).unwrap();
     }
-    for p in after.keys() {
-        if !before.contains_key(p) && !p.to_string_lossy().ends_with("-wal") {
-            diffs.push(format!("extra: {}", p.display()));
-        }
-    }
-    assert!(diffs.is_empty(), "restore not lossless:\n{}", diffs.join("\n"));
-
-    // Clean is idempotent after restore + clean again (same tokens).
+    backdate(&fx.root);
     let o = fx.run(&[
         "clean",
         "--root",
@@ -188,7 +174,10 @@ fn scan_clean_restore_roundtrip() {
     ]);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     let archives = std::fs::read_dir(fx.data.join("archives")).unwrap().count();
-    assert_eq!(archives, 2, "keep=1 should leave one archive and its sidecar");
+    assert_eq!(
+        archives, 3,
+        "keep=1 should leave one archive, its sidecar and undo directory"
+    );
 }
 
 #[test]
@@ -215,11 +204,18 @@ fn password_sources() {
     assert!(stderr(&o).contains("NEURALYZER_PASSWORD"), "expected env warning");
     let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     let archive = rep["archive"].as_str().unwrap().to_string();
+    let dest = fx.dir.path().join("stdin-recovery");
     // Stdin.
     use std::io::Write;
     let mut child = fx
         .cmd()
-        .args(["restore", &archive, "--password-stdin"])
+        .args([
+            "restore",
+            &archive,
+            "--into",
+            dest.to_str().unwrap(),
+            "--password-stdin",
+        ])
         .stdin(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -252,6 +248,8 @@ fn password_sources() {
             "--password-file",
             &p.display().to_string(),
             "--insecure-password-file",
+            "--into",
+            fx.dir.path().join("insecure-recovery").to_str().unwrap(),
         ]);
         assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     }
@@ -416,25 +414,10 @@ fn clean_args(fx: &Fixture) -> Vec<String> {
     .collect()
 }
 
-fn restore_is_lossless(before: &BTreeMap<std::path::PathBuf, Vec<u8>>, after: &BTreeMap<std::path::PathBuf, Vec<u8>>) {
-    let mut diffs = vec![];
-    for (p, b) in before {
-        match after.get(p) {
-            Some(a) if a == b => {}
-            Some(_) => diffs.push(format!("changed: {}", p.display())),
-            None => diffs.push(format!("missing: {}", p.display())),
-        }
-    }
-    assert!(diffs.is_empty(), "restore not lossless:\n{}", diffs.join("\n"));
-}
-
-/// Regression (state: archive without after-sidecar). A clean that dies after
-/// redacting but before writing `.after.age` used to leave a backup that
-/// restore refused file by file ("changed since cleaning", exit 2) unless the
-/// user passed --force. The journal now makes it restorable as is.
+/// A backup can still be recovered if clean stops before sealing the after-hashes.
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "fault injection is compiled into debug builds only")]
-fn interrupted_clean_is_restorable_without_force() {
+fn interrupted_clean_backup_can_be_recovered() {
     let fx = fixture();
     let before = fx.snapshot();
     let o = fx
@@ -461,10 +444,7 @@ fn interrupted_clean_is_restorable_without_force() {
         "files should be redacted"
     );
 
-    let o = fx.run(&["restore", &archive, "--password-file", &fx.pw_s()]);
-    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    assert!(stderr(&o).contains("recovery journal"), "{}", stderr(&o));
-    restore_is_lossless(&before, &fx.snapshot());
+    assert_recovered(&fx, &archive, &before);
 }
 
 /// Regression: a VACUUM failure after the redaction committed was reported as
@@ -499,9 +479,7 @@ fn vacuum_failure_after_commit_is_reported_as_modified() {
         assert!(f["drift"].as_str().unwrap_or("").contains("VACUUM failed"), "{f}");
     }
     let archive = rep["archive"].as_str().unwrap().to_string();
-    let o = fx.run(&["restore", &archive, "--password-file", &fx.pw_s()]);
-    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    restore_is_lossless(&before, &fx.snapshot());
+    assert_recovered(&fx, &archive, &before);
 }
 
 /// Regression: two cleans (or a clean and a restore) could run at once on one
@@ -531,43 +509,6 @@ fn concurrent_runs_are_refused() {
     let o = fx.run(&["restore", &archive, "--password-file", &fx.pw_s()]);
     assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
     assert!(stderr(&o).contains("another neuralyzer"), "{}", stderr(&o));
-}
-
-/// Regression: restore replaced files that another process held locked.
-#[cfg(unix)]
-#[test]
-fn restore_skips_locked_files() {
-    let fx = fixture();
-    let before = fx.snapshot();
-    let mut args = clean_args(&fx);
-    args.extend(["--only".into(), "omp".into()]);
-    let o = fx.cmd().args(&args).output().unwrap();
-    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    let rep: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    let archive = rep["archive"].as_str().unwrap().to_string();
-    let target = walkdir(&fx.root.join(".omp"))
-        .into_iter()
-        .find(|p| p.extension().is_some_and(|e| e == "jsonl") && before.get(p) != std::fs::read(p).ok().as_ref())
-        .expect("a redacted omp file");
-    let redacted = std::fs::read(&target).unwrap();
-    let lf = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&target)
-        .unwrap();
-    lf.lock().unwrap();
-    let o = fx.run(&["restore", &archive, "--password-file", &fx.pw_s(), "--force"]);
-    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
-    assert!(stderr(&o).contains("locked by another process"), "{}", stderr(&o));
-    assert_eq!(
-        std::fs::read(&target).unwrap(),
-        redacted,
-        "a locked file must not be replaced"
-    );
-    lf.unlock().unwrap();
-    let o = fx.run(&["restore", &archive, "--password-file", &fx.pw_s()]);
-    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    restore_is_lossless(&before, &fx.snapshot());
 }
 
 #[test]

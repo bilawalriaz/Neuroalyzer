@@ -115,10 +115,5 @@ fn new_agents_roundtrip() {
     assert!(v.contains("[EMAIL:"), "{v}");
     drop(c);
 
-    let o = fx.run(&["restore", &name, "--password-file", &fx.pw_s()]);
-    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    let after = fx.snapshot();
-    for (p, b) in &before {
-        assert_eq!(after.get(p), Some(b), "{} not restored byte-identically", p.display());
-    }
+    assert_recovered(&fx, &name, &before);
 }
