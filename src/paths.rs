@@ -74,8 +74,7 @@ pub fn ensure_private_dir(p: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Restrict a file to the owner. No-op on Windows, where files in the user's
-/// local app data dir already inherit an owner-only ACL.
+/// Restrict a file to the owner on Unix. Windows files inherit directory ACLs.
 pub fn make_private(p: &Path) -> Result<()> {
     #[cfg(unix)]
     {
