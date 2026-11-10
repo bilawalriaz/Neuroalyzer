@@ -15,7 +15,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -361,6 +361,8 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
             tempfile::NamedTempFile::new_in(&dir)
                 .with_context(|| format!("couldn't write reports to {}", dir.display()))?;
         }
+        let dir = crate::paths::archives_dir()?;
+        let _archive_lock = crate::paths::lock_portable_archives()?;
         let pw = password::resolve(pw_args, Purpose::Clean, opts.quiet)?;
         // Build backup sources: each file plus SQLite companions.
         let mut sources = vec![];
@@ -392,7 +394,7 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
             .map(|m| m.len())
             .sum();
         let pb = bar(bytes, "backing up", opts.quiet);
-        let (apath, manifest) = backup::create(&sources, &pw, &crate::paths::archives_dir(), &pb)?;
+        let (apath, manifest) = backup::create(&sources, &pw, &dir, &pb)?;
         pb.finish_and_clear();
         if !opts.quiet {
             eprintln!("Backup written and verified: {}", apath.display());
@@ -463,7 +465,7 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
                 }
             }
         }
-        let removed = backup::prune(&crate::paths::archives_dir(), keep);
+        let removed = backup::prune(&dir, keep);
         if !removed.is_empty() && opts.verbose > 0 {
             eprintln!("Removed {} old backup(s).", removed.len());
         }
@@ -584,22 +586,30 @@ fn resolve_archive(name: &str, list: &[backup::ArchiveInfo]) -> Result<PathBuf> 
     if p.is_file() {
         return Ok(p);
     }
-    if let Some(a) = list.iter().find(|a| a.name == name) {
-        return Ok(a.path.clone());
+    let mut hits: Vec<&backup::ArchiveInfo> = list.iter().filter(|a| a.name == name).collect();
+    if hits.is_empty() {
+        hits = list.iter().filter(|a| a.name.starts_with(name)).collect();
     }
-    let hits: Vec<&backup::ArchiveInfo> = list.iter().filter(|a| a.name.starts_with(name)).collect();
     match hits.as_slice() {
         [] => bail!("no backup called '{name}'. Run `neuralyzer restore` to list them."),
         [a] => Ok(a.path.clone()),
         many => bail!(
-            "'{name}' matches {} backups:\n{}\nGive more of the name.",
+            "'{name}' matches {} backups:\n{}\nGive the full archive path.",
             many.len(),
             many.iter()
-                .map(|a| format!("  {}", a.name))
+                .map(|a| format!("  {}", a.path.display()))
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
     }
+}
+
+fn available_archives(dir: &Path) -> Result<Vec<backup::ArchiveInfo>> {
+    let legacy = crate::paths::legacy_archives_dir()?;
+    let legacy = legacy
+        .as_deref()
+        .filter(|path| path.canonicalize().ok() != dir.canonicalize().ok());
+    Ok(backup::list_in(std::iter::once(dir).chain(legacy)))
 }
 
 pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
@@ -620,6 +630,8 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
     if d.jobs.iter().any(|j| j.tool == "custom") {
         tools.push("custom");
     }
+    let archive_dir = crate::paths::archives_dir()?;
+    let archives = available_archives(&archive_dir)?;
     if opts.json {
         let v = serde_json::json!({
             "tools": tools.iter().map(|t| {
@@ -631,7 +643,7 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
                     "bytes": jobs.iter().map(|j| j.size).sum::<u64>(),
                 })
             }).collect::<Vec<_>>(),
-            "archives": backup::list(&crate::paths::archives_dir()).iter().map(|a| serde_json::json!({
+            "archives": archives.iter().map(|a| serde_json::json!({
                 "path": a.path.display().to_string(), "bytes": a.size, "modified": a.modified.to_rfc3339()
             })).collect::<Vec<_>>(),
         });
@@ -688,10 +700,9 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
     for n in &d.notes {
         println!("note: {n}");
     }
-    let archives = backup::list(&crate::paths::archives_dir());
     println!("{}", style("Backups").bold());
     if archives.is_empty() {
-        println!("  none yet ({})", crate::paths::archives_dir().display());
+        println!("  none yet ({})", archive_dir.display());
     }
     for a in archives {
         println!(
@@ -705,8 +716,8 @@ pub fn list(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
 }
 
 pub fn restore(archive: Option<String>, force: bool, pw_args: &PwArgs, quiet: bool) -> Result<i32> {
-    let dir = crate::paths::archives_dir();
-    let list = backup::list(&dir);
+    let dir = crate::paths::archives_dir()?;
+    let list = available_archives(&dir)?;
     let name = match archive {
         Some(n) => n,
         None => {

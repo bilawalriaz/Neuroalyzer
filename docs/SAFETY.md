@@ -23,9 +23,9 @@ Each backup is one archive plus one sidecar.
 
 | File | Contents |
 |---|---|
-| `archives/neuralyzer-<timestamp>.tar.zst.age` | The backup itself. Written once, then verified. |
-| `archives/neuralyzer-<timestamp>.after.age` | Hashes of each file that clean wrote, after redaction. Written after the redaction pass. |
-| `archives/neuralyzer-<timestamp>.after.journal` | Only while `clean` runs, or after it was interrupted. The same hashes, written one by one as files are replaced. It holds entry ids and hashes of redacted content, never values, and is owner-only. |
+| `neuralyzer-<timestamp>.tar.zst.age` | The backup itself. Written once, then verified. |
+| `neuralyzer-<timestamp>.after.age` | Hashes of each file that clean wrote, after redaction. Written after the redaction pass. |
+| `neuralyzer-<timestamp>.after.journal` | Only while `clean` runs, or after it was interrupted. The same hashes, written one by one as files are replaced. It holds entry ids and hashes of redacted content, never values, and is owner-only. |
 
 Two backups made in the same second get a suffix: `neuralyzer-<timestamp>-1`, `-2`, and so on. The suffix counts as newer, so the newest backup is always kept.
 
@@ -35,7 +35,7 @@ The first entry in the tar is `manifest.json`. It lists each file with its origi
 
 The after-redaction hashes cannot go in the archive, because the archive is written before redaction starts. They go in the sidecar, which is encrypted with the same password. The archive itself does not change after it is verified.
 
-The data directory holds the archives in `archives/`. The folder is owner-only (`0700` on Unix), and so are the files (`0600`). `neuralyzer list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar and journal too. Archive files with names Neuralyzer didn't make are listed but never deleted.
+Windows writes archives and their sidecars beside the executable by default. It also lists existing backups from the local app data archive directory. On macOS and Linux, or when `NEURALYZER_DATA_DIR` is set, backups go in the data directory under `archives/`. On Unix, the folder uses mode `0700` and files use `0600`. `neuralyzer list` shows the backups, with the newest first. Only the newest `--keep` archives are kept, and each deletion removes the sidecar and journal too. Archive files with names Neuralyzer didn't make are listed but never deleted.
 
 ## Passwords
 

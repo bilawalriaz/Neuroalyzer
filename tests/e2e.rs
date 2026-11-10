@@ -626,7 +626,7 @@ fn ner_requires_explicit_opt_in() {
 
 #[cfg(windows)]
 #[test]
-fn windows_reports_follow_the_executable() {
+fn windows_output_follows_the_executable() {
     let fx = fixture();
     let bin_dir = fx.dir.path().join("bin");
     std::fs::create_dir(&bin_dir).unwrap();
@@ -654,4 +654,22 @@ fn windows_reports_follow_the_executable() {
     let output = command.env("NEURALYZER_DATA_DIR", &fx.data).output().unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert_eq!(walkdir(&fx.data.join("reports")).len(), 2);
+
+    let name = "neuralyzer-20261110-120000.tar.zst.age";
+    std::fs::write(bin_dir.join(name), b"archive listing fixture").unwrap();
+    let output = std::process::Command::new(&exe)
+        .current_dir(fx.dir.path())
+        .env_remove("NEURALYZER_DATA_DIR")
+        .env("NEURALYZER_CONFIG", fx.dir.path().join("no-config.toml"))
+        .args(["list", "--json", "--root"])
+        .arg(&fx.root)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(report["archives"].as_array().unwrap().iter().any(|archive| {
+        let path = std::path::Path::new(archive["path"].as_str().unwrap());
+        path.file_name().is_some_and(|file| file == name)
+            && path.parent().unwrap().canonicalize().unwrap() == bin_dir.canonicalize().unwrap()
+    }));
 }

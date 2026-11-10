@@ -343,8 +343,13 @@ pub struct ArchiveInfo {
 }
 
 pub fn list(dir: &Path) -> Vec<ArchiveInfo> {
-    let mut v: Vec<ArchiveInfo> = std::fs::read_dir(dir)
+    list_in(std::iter::once(dir))
+}
+
+pub fn list_in<'a>(dirs: impl IntoIterator<Item = &'a Path>) -> Vec<ArchiveInfo> {
+    let mut v: Vec<ArchiveInfo> = dirs
         .into_iter()
+        .flat_map(std::fs::read_dir)
         .flatten()
         .filter_map(Result::ok)
         .filter_map(|e| {
