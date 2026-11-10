@@ -10,7 +10,7 @@ use crate::password::{self, Purpose, PwArgs};
 use crate::report::{self, Engines, FileReport, Report};
 use crate::sqlite::{self, SqlResult};
 use crate::token::Tokenizer;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
