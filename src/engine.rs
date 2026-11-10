@@ -37,6 +37,16 @@ pub struct Outcome {
 impl Engine {
     /// Redact one decoded string. Returns the new string if anything changed.
     pub fn redact_str(&self, s: &str, key: &str, counts: &mut Counts) -> Option<String> {
+        if let Some(ner) = &self.ner
+            && ner.collecting()
+        {
+            // NER collect pass: walk exactly the strings redaction will, but
+            // only record prose chunks for the model.
+            if prose::is_prose_key(key) {
+                ner.find(s, &mut vec![]);
+            }
+            return None;
+        }
         let mut found: Vec<Finding> = vec![];
         if self.det.record_may_match(s.as_bytes()) {
             self.det.detect(s, Ctx { key }, &mut found);
@@ -83,8 +93,11 @@ impl Engine {
         if self.ner.is_none() && !self.det.record_may_match(lit_bytes) {
             return None;
         }
-        let val = jsonscan::decode(lit_bytes)?;
         let key = jsonscan::key_str(key);
+        if self.ner.as_ref().is_some_and(|n| n.collecting()) && !prose::is_prose_key(&key) {
+            return None;
+        }
+        let val = jsonscan::decode(lit_bytes)?;
         self.redact_str(&val, &key, counts)
             .map(|new| (span.start, span.end, jsonscan::encode(&new)))
     }
@@ -250,27 +263,6 @@ impl Engine {
         Some(out)
     }
 
-    /// Feed NER every prose string in the file first, so inference is batched.
-    fn ner_prepare(&self, raw: &[u8], format: Format) {
-        let Some(ner) = &self.ner else { return };
-        let mut texts: Vec<String> = vec![];
-        match format {
-            Format::Json | Format::Jsonl => {
-                jsonscan::for_each_string(raw, |lit| {
-                    if prose::is_prose_key(&jsonscan::key_str(lit.key))
-                        && let Some(v) = jsonscan::decode(&raw[lit.span])
-                    {
-                        texts.push(v.into_owned());
-                    }
-                });
-            }
-            // Text is redacted line by line, so prepare the same units.
-            Format::Text => texts.extend(String::from_utf8_lossy(raw).split_inclusive('\n').map(str::to_owned)),
-            Format::Sqlite | Format::JsonlZst => {}
-        }
-        ner.prepare(texts.iter().map(String::as_str));
-    }
-
     /// Process a JSON, JSONL or text file held in memory.
     pub fn process_bytes(&self, job: &Job, raw: &[u8]) -> Outcome {
         self.process(job, raw, true)
@@ -310,7 +302,6 @@ impl Engine {
         {
             o.drift = Some(msg);
         }
-        self.ner_prepare(raw, format);
         let mut line_drift = false;
         o.new_bytes = match format {
             Format::Json => match self.redact_json(raw, &mut o.counts) {

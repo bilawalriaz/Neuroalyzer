@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod engine;
 pub mod fault;
 pub mod fsutil;
+pub mod hw;
 pub mod jsonscan;
 pub mod known;
 pub mod ner;

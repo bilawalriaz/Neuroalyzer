@@ -26,6 +26,12 @@ struct Cli {
     /// Use this config file instead of the default one.
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
+    /// CPU threads to use: a number, max, half or p-cores. Default: auto.
+    #[arg(short = 'j', long = "threads", global = true, value_name = "N")]
+    threads: Option<String>,
+    /// Run at low priority so the machine stays usable (background QoS on macOS, nice on Linux).
+    #[arg(long, global = true)]
+    low_priority: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -50,6 +56,18 @@ struct Common {
     /// Print the report as JSON on stdout instead of writing report files.
     #[arg(long)]
     json: bool,
+    /// Parallel NER workers. Default: one per performance core.
+    #[arg(long, value_name = "N")]
+    ner_sessions: Option<usize>,
+    /// Threads per NER worker. Default: 1.
+    #[arg(long, value_name = "N")]
+    ner_threads: Option<usize>,
+    /// Chunks per NER model call. Default: 1.
+    #[arg(long, value_name = "N")]
+    ner_batch: Option<usize>,
+    /// Where NER runs: auto, cpu, coreml, cuda or directml (the last three need a build with that feature).
+    #[arg(long, value_name = "DEVICE")]
+    ner_device: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -135,8 +153,56 @@ fn ner_default(c: &Common, cfg: &Config) -> bool {
     }
 }
 
-fn opts(c: &Common, cfg: &Config, cli: &Cli, min_age: u64) -> ScanOpts {
-    ScanOpts {
+/// First of: flag, `<PKG>_<env>` variable, config value. Parse errors name the source.
+fn pick<T: std::str::FromStr>(flag: Option<T>, env: &str, cfg: Option<T>) -> anyhow::Result<Option<T>>
+where
+    T::Err: std::fmt::Display,
+{
+    if flag.is_some() {
+        return Ok(flag);
+    }
+    if let Some(v) = neuroalyzer::paths::env_value(env) {
+        return v
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("{}={v}: {e}", neuroalyzer::paths::env_name(env)));
+    }
+    Ok(cfg)
+}
+
+fn ner_runtime(c: &Common, cfg: &Config) -> anyhow::Result<neuroalyzer::ner::Runtime> {
+    use neuroalyzer::ner::{Device, Runtime};
+    let cores = neuroalyzer::hw::detect();
+    let mut auto = Runtime::auto(&cores);
+    // Stay inside the -j budget (the scan pool is sized before this runs).
+    auto.sessions = auto.sessions.min(rayon::current_num_threads()).max(1);
+    let device = match pick(c.ner_device.clone(), "NER_DEVICE", cfg.ner.device.clone())? {
+        Some(d) => d.parse::<Device>().map_err(|e| anyhow::anyhow!(e))?,
+        None => auto.device,
+    };
+    let positive = |name: &str, v: Option<usize>| -> anyhow::Result<Option<usize>> {
+        match v {
+            Some(0) => anyhow::bail!("{name} must be at least 1"),
+            v => Ok(v),
+        }
+    };
+    let threads = positive("NER threads", pick(c.ner_threads, "NER_THREADS", cfg.ner.threads)?)?;
+    // With more threads per worker, default to fewer workers so the total
+    // stays on the performance cores.
+    let sessions = positive("NER sessions", pick(c.ner_sessions, "NER_SESSIONS", cfg.ner.sessions)?)?
+        .unwrap_or_else(|| (auto.sessions / threads.unwrap_or(auto.threads)).max(1));
+    Ok(Runtime {
+        sessions,
+        threads: threads.unwrap_or(auto.threads),
+        batch: positive("NER batch", pick(c.ner_batch, "NER_BATCH", cfg.ner.batch)?)?.unwrap_or(auto.batch),
+        device,
+    })
+}
+
+fn opts(c: &Common, cfg: &Config, cli: &Cli, min_age: u64) -> anyhow::Result<ScanOpts> {
+    Ok(ScanOpts {
+        ner_rt: Some(ner_runtime(c, cfg)?),
         only: c.only.clone(),
         root: c.root.clone(),
         also: c.also.clone(),
@@ -145,7 +211,25 @@ fn opts(c: &Common, cfg: &Config, cli: &Cli, min_age: u64) -> ScanOpts {
         min_age,
         quiet: cli.quiet,
         verbose: cli.verbose,
+    })
+}
+
+/// Size the scan pool and set priority before any worker threads start.
+fn setup_threads(cli: &Cli, cfg: &Config) -> anyhow::Result<()> {
+    use neuroalyzer::hw::Budget;
+    let low = cli.low_priority || pick(None::<bool>, "LOW_PRIORITY", cfg.defaults.low_priority)?.unwrap_or(false);
+    if low {
+        neuroalyzer::hw::lower_priority();
     }
+    let budget = pick(cli.threads.clone(), "THREADS", cfg.defaults.threads.clone())?
+        .map(|s| s.parse::<Budget>().map_err(|e| anyhow::anyhow!("--threads: {e}")))
+        .transpose()?
+        .unwrap_or(Budget::Auto);
+    let cores = neuroalyzer::hw::detect();
+    let n = budget.threads(&cores);
+    // Ignore "already built": tests and library users may have set it up.
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(n).build_global();
+    Ok(())
 }
 
 fn real_main(cli: Cli) -> anyhow::Result<i32> {
@@ -159,6 +243,7 @@ fn real_main(cli: Cli) -> anyhow::Result<i32> {
     {
         eprintln!("Using config {}", p.display());
     }
+    setup_threads(&cli, &cfg)?;
     match &cli.cmd {
         Cmd::List { only, root, also, json } => {
             let o = ScanOpts {
@@ -170,7 +255,7 @@ fn real_main(cli: Cli) -> anyhow::Result<i32> {
             };
             run::list(&o, &cfg)
         }
-        Cmd::Scan { common } => run::scan(&opts(common, &cfg, &cli, 0), &cfg),
+        Cmd::Scan { common } => run::scan(&opts(common, &cfg, &cli, 0)?, &cfg),
         Cmd::Clean {
             common,
             yes,
@@ -179,7 +264,7 @@ fn real_main(cli: Cli) -> anyhow::Result<i32> {
             pw,
         } => {
             let keep = keep.or(cfg.defaults.keep).unwrap_or(5);
-            run::clean(&opts(common, &cfg, &cli, *min_age), &cfg, *yes, keep, pw)
+            run::clean(&opts(common, &cfg, &cli, *min_age)?, &cfg, *yes, keep, pw)
         }
         Cmd::Restore { archive, force, pw } => run::restore(archive.clone(), *force, pw, cli.quiet),
         Cmd::Key {

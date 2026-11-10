@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default)]
 pub struct ScanOpts {
+    /// NER runtime plan (sessions, threads, batch, device).
+    pub ner_rt: Option<crate::ner::Runtime>,
     pub only: Vec<String>,
     pub root: Option<PathBuf>,
     pub also: Vec<PathBuf>,
@@ -88,9 +90,18 @@ pub fn prepare(opts: &ScanOpts, cfg: &Config, writing: bool) -> Result<Prepared>
         ..Default::default()
     };
     let ner = if opts.ner {
-        match crate::ner::Ner::load(&cfg.ner, opts.quiet) {
+        let cores = crate::hw::detect();
+        let rt = opts.ner_rt.unwrap_or_else(|| crate::ner::Runtime::auto(&cores));
+        match crate::ner::Ner::load(&cfg.ner, rt, opts.quiet) {
             Ok(n) => {
                 engines.ner = true;
+                if opts.verbose > 0 && !opts.quiet {
+                    eprintln!(
+                        "plan: {cores}; scan pool {} threads; NER {}",
+                        rayon::current_num_threads(),
+                        n.describe()
+                    );
+                }
                 Some(n)
             }
             Err(e) => {
@@ -217,10 +228,56 @@ fn map_jobs<T: Send>(jobs: &[Job], f: impl Fn(&Job) -> T + Sync) -> Vec<T> {
         .collect()
 }
 
+fn ner_bar(quiet: bool) -> ProgressBar {
+    if quiet || !std::io::stderr().is_terminal() {
+        return ProgressBar::hidden();
+    }
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template("{prefix:>10} [{bar:30}] {msg} eta {eta}")
+            .unwrap()
+            .progress_chars("=> "),
+    );
+    pb.set_prefix("NER");
+    pb
+}
+
+/// Corpus-wide NER before analysis: collect every uncached prose chunk from
+/// all files (deduplicated), infer them on the worker pool, then let the
+/// normal analysis find every chunk in the cache. Repeats in rounds if the
+/// collected text outgrows its memory budget.
+fn ner_pass(p: &Prepared, min_age: Option<Duration>, opts: &ScanOpts) {
+    let Some(ner) = &p.engine.ner else { return };
+    let total: u64 = p.jobs.iter().map(|j| j.size).sum();
+    loop {
+        let pb = bar(total, "reading", opts.quiet);
+        ner.begin_collect();
+        map_jobs(&p.jobs, |job| {
+            let _ = analyse(&p.engine, job, min_age);
+            pb.inc(job.size);
+        });
+        let pending = ner.end_collect();
+        pb.finish_and_clear();
+        let (n, complete) = (pending.chunks.len(), pending.complete);
+        if opts.verbose > 0 && !opts.quiet {
+            eprintln!("NER: {n} new unique chunks to infer");
+        }
+        let before = ner.stats().0;
+        let ipb = ner_bar(opts.quiet);
+        ner.infer_all(pending, &ipb);
+        ipb.finish_and_clear();
+        // Stop when done, or when a round made no progress (every chunk failed).
+        if complete || n == 0 || ner.stats().0 == before {
+            break;
+        }
+    }
+}
+
 pub fn scan(opts: &ScanOpts, cfg: &Config) -> Result<i32> {
     let started = chrono::Local::now();
     let t0 = Instant::now();
     let p = prepare(opts, cfg, false)?;
+    ner_pass(&p, None, opts);
     let total: u64 = p.jobs.iter().map(|j| j.size).sum();
     let pb = bar(total, "scanning", opts.quiet);
     let results: Vec<(String, FileReport)> = map_jobs(&p.jobs, |job| {
@@ -256,6 +313,7 @@ pub fn clean(opts: &ScanOpts, cfg: &Config, yes: bool, keep: usize, pw_args: &Pw
     let t0 = Instant::now();
     let p = prepare(opts, cfg, true)?;
     let min_age = Duration::from_secs(opts.min_age);
+    ner_pass(&p, Some(min_age), opts);
     let total: u64 = p.jobs.iter().map(|j| j.size).sum();
     let pb = bar(total, "scanning", opts.quiet);
     let first: Vec<(usize, std::result::Result<Outcome, String>)> = map_jobs(&p.jobs, |job| {

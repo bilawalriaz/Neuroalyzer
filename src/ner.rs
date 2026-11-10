@@ -4,7 +4,19 @@
 //! Only prose is fed to the model: user messages and tool-result text, with
 //! code blocks and code-looking paragraphs skipped (see `prose.rs`). Agents
 //! re-read the same content constantly, so each chunk is keyed by its BLAKE3
-//! hash and inferred once per run. Inference is batched per file.
+//! hash and inferred once.
+//!
+//! A run works corpus-wide in three stages (driven by `run.rs`):
+//!
+//! 1. collect: walk every file the way redaction will, and record each prose
+//!    chunk that has no cached result, deduplicated across the whole corpus;
+//! 2. infer: run the model over the unique chunks, longest first, on a pool of
+//!    workers that share one model (no lock: ONNX Runtime sessions allow
+//!    concurrent runs);
+//! 3. apply: redaction looks every chunk up in the cache.
+//!
+//! Text collected in stage 1 is capped (`COLLECT_BUDGET`); a corpus with more
+//! uncached prose than that is processed in several rounds.
 
 use crate::config::NerConfig;
 use crate::detect::Finding;
@@ -34,14 +46,110 @@ const FILES: &[(&str, &str, &str, u64)] = &[
 /// Words per chunk. The model's limit is 512 tokens including the label prompt.
 #[cfg_attr(not(feature = "ner"), allow(dead_code))]
 const CHUNK_WORDS: usize = 160;
+
+/// Most chunk text held in memory between the collect and infer stages.
 #[cfg_attr(not(feature = "ner"), allow(dead_code))]
-/// One chunk per inference call. A batch pads every sequence to the longest
-/// one in it and scores the padded spans, which measured ~1.7x more work than
-/// the calls it saves on real sessions.
-const BATCH: usize = 1;
+const COLLECT_BUDGET: u64 = 1 << 30;
 
 pub fn model_dir() -> std::path::PathBuf {
     crate::paths::models_dir().join(MODEL_ID.replace('/', "--"))
+}
+
+/// Where inference runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Device {
+    /// Pick the fastest available. CPU unless a GPU provider was compiled in
+    /// and loads; CoreML is opt-in (it measured slower than CPU for this model).
+    #[default]
+    Auto,
+    Cpu,
+    CoreMl,
+    Cuda,
+    DirectMl,
+}
+
+impl std::str::FromStr for Device {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Ok(Device::Auto),
+            "cpu" => Ok(Device::Cpu),
+            "coreml" => Ok(Device::CoreMl),
+            "cuda" => Ok(Device::Cuda),
+            "directml" | "dml" => Ok(Device::DirectMl),
+            other => Err(format!(
+                "unknown NER device '{other}' (auto, cpu, coreml, cuda, directml)"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Device::Auto => "auto",
+            Device::Cpu => "cpu",
+            Device::CoreMl => "coreml",
+            Device::Cuda => "cuda",
+            Device::DirectMl => "directml",
+        })
+    }
+}
+
+/// How the model runs: `sessions` workers, each with `threads` intra-op
+/// threads, sending `batch` chunks per call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Runtime {
+    pub sessions: usize,
+    pub threads: usize,
+    pub batch: usize,
+    pub device: Device,
+}
+
+impl Runtime {
+    /// Defaults for this machine: one single-threaded worker per physical
+    /// core. On an M3 Pro (6P+6E), 12 x 1 ran 1.5x faster than one session
+    /// with 6 threads, and beat 6 x 1, 8 x 1 and 3 x 2: the model has an LSTM,
+    /// which parallelises poorly within a call, so whole calls in parallel
+    /// win, and efficiency cores add throughput when nothing waits on them.
+    pub fn auto(cores: &crate::hw::Cores) -> Self {
+        Runtime {
+            sessions: cores.physical().max(1),
+            threads: 1,
+            batch: 1,
+            device: Device::Auto,
+        }
+    }
+}
+
+/// Chunks gathered by the collect stage.
+#[derive(Default)]
+pub struct Pending {
+    pub chunks: Vec<([u8; 32], Box<str>)>,
+    /// False when the collect budget filled up; collect again after inferring.
+    pub complete: bool,
+}
+
+/// Rough model-word count: the GLiNER splitter emits word runs and single
+/// punctuation marks. Used for scheduling and progress, not for chunking.
+#[cfg_attr(not(feature = "ner"), allow(dead_code))]
+fn work_units(s: &str) -> u64 {
+    let mut n = 0u64;
+    let mut in_word = false;
+    for c in s.chars() {
+        if c.is_alphanumeric() || (in_word && (c == '_' || c == '-')) {
+            if !in_word {
+                n += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+            if !c.is_whitespace() {
+                n += 1;
+            }
+        }
+    }
+    n.max(1)
 }
 
 #[cfg(not(feature = "ner"))]
@@ -51,13 +159,26 @@ mod imp {
     pub struct Ner;
 
     impl Ner {
-        pub fn load(_cfg: &NerConfig, _quiet: bool) -> Result<Self> {
+        pub fn load(_cfg: &NerConfig, _rt: Runtime, _quiet: bool) -> Result<Self> {
             bail!("this build has no NER support (built with --no-default-features)")
         }
-        pub fn prepare<'a>(&self, _texts: impl Iterator<Item = &'a str>) {}
         pub fn find(&self, _text: &str, _out: &mut Vec<Finding>) {}
+        pub fn collecting(&self) -> bool {
+            false
+        }
+        pub fn begin_collect(&self) {}
+        pub fn end_collect(&self) -> Pending {
+            Pending {
+                complete: true,
+                ..Default::default()
+            }
+        }
+        pub fn infer_all(&self, _p: Pending, _pb: &indicatif::ProgressBar) {}
         pub fn stats(&self) -> (u64, u64) {
             (0, 0)
+        }
+        pub fn describe(&self) -> String {
+            String::new()
         }
     }
 
@@ -71,23 +192,64 @@ mod imp {
     use super::*;
     use crate::detect::P_NER;
     use anyhow::Context;
+    use composable::Composable;
     use gliner::model::input::text::TextInput;
-    use gliner::model::pipeline::span::SpanMode;
-    use gliner::model::{GLiNER, params::Parameters};
-    use orp::params::RuntimeParameters;
+    use gliner::model::params::Parameters;
+    use gliner::model::pipeline::span::{SpanMode, SpanPipeline};
+    use orp::pipeline::Pipeline;
+    use ort::session::{Session, builder::GraphOptimizationLevel};
     use sha2::Digest;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::io::Read;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
+    use std::time::{Duration, Instant};
 
     type Spans = Arc<Vec<(u32, u32, u8)>>;
+    type Hash = [u8; 32];
+
+    const SHARDS: usize = 64;
+
+    /// A map split by the first hash byte, so worker threads rarely contend.
+    struct Sharded<V>(Vec<RwLock<HashMap<Hash, V>>>);
+
+    impl<V: Clone> Sharded<V> {
+        fn new() -> Self {
+            Sharded((0..SHARDS).map(|_| RwLock::new(HashMap::new())).collect())
+        }
+        fn shard(&self, h: &Hash) -> &RwLock<HashMap<Hash, V>> {
+            &self.0[h[0] as usize % SHARDS]
+        }
+        fn get(&self, h: &Hash) -> Option<V> {
+            self.shard(h).read().unwrap().get(h).cloned()
+        }
+        fn contains(&self, h: &Hash) -> bool {
+            self.shard(h).read().unwrap().contains_key(h)
+        }
+        fn insert(&self, h: Hash, v: V) -> bool {
+            self.shard(&h).write().unwrap().insert(h, v).is_none()
+        }
+        fn drain(&self) -> Vec<(Hash, V)> {
+            self.0
+                .iter()
+                .flat_map(|s| s.write().unwrap().drain().collect::<Vec<_>>())
+                .collect()
+        }
+    }
 
     pub struct Ner {
-        model: Mutex<GLiNER<SpanMode>>,
+        sessions: Vec<Session>,
+        pipeline: SpanMode,
+        params: Parameters,
+        rt: Runtime,
+        device: Device,
         labels: Vec<String>,
         kinds: Vec<&'static str>,
-        cache: RwLock<HashMap<[u8; 32], Spans>>,
+        cache: Sharded<Spans>,
+        collecting: AtomicBool,
+        pending: Sharded<Arc<str>>,
+        pending_bytes: AtomicU64,
+        overflow: AtomicBool,
         inferred: AtomicU64,
         hits: AtomicU64,
     }
@@ -170,28 +332,84 @@ mod imp {
         Ok(())
     }
 
-    /// ONNX Runtime's intra-op pool uses every logical CPU. On Apple silicon
-    /// that includes the efficiency cores, and the pool waits on them: on an
-    /// M3 Pro, 12 threads measured 1.7x slower than the 6 performance cores.
-    /// Elsewhere, use what the OS reports.
-    fn model_threads() -> usize {
-        #[cfg(target_os = "macos")]
-        if let Ok(out) = std::process::Command::new("sysctl")
-            .args(["-n", "hw.perflevel0.physicalcpu"])
-            .output()
-            && let Ok(n) = String::from_utf8_lossy(&out.stdout).trim().parse::<usize>()
-            && n > 0
-        {
-            return n;
+    fn build_session(
+        path: &std::path::Path,
+        threads: usize,
+        device: Device,
+        prepacked: &ort::session::builder::PrepackedWeights,
+    ) -> Result<(Session, Device)> {
+        let base = || -> Result<ort::session::builder::SessionBuilder> {
+            Ok(Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(threads)?
+                .with_inter_threads(1)?
+                // Spinning burned a third of all CPU in profiles: workers wait
+                // on each other between short ops. Block instead.
+                .with_intra_op_spinning(false)?
+                .with_inter_op_spinning(false)?
+                .with_prepacked_weights(prepacked)?)
+        };
+        let try_ep = |ep: ort::execution_providers::ExecutionProviderDispatch| -> Result<Session> {
+            Ok(base()?
+                .with_execution_providers([ep.error_on_failure()])?
+                .commit_from_file(path)?)
+        };
+        let _ = &try_ep;
+        match device {
+            Device::Auto | Device::Cpu => {}
+            #[cfg(feature = "coreml")]
+            Device::CoreMl => {
+                use ort::execution_providers::CoreMLExecutionProvider;
+                let s = try_ep(CoreMLExecutionProvider::default().with_subgraphs().build())
+                    .context("couldn't start the CoreML execution provider")?;
+                return Ok((s, Device::CoreMl));
+            }
+            #[cfg(feature = "cuda")]
+            Device::Cuda => {
+                use ort::execution_providers::CUDAExecutionProvider;
+                let s = try_ep(CUDAExecutionProvider::default().build())
+                    .context("couldn't start the CUDA execution provider")?;
+                return Ok((s, Device::Cuda));
+            }
+            #[cfg(feature = "directml")]
+            Device::DirectMl => {
+                use ort::execution_providers::DirectMLExecutionProvider;
+                let s = try_ep(DirectMLExecutionProvider::default().build())
+                    .context("couldn't start the DirectML execution provider")?;
+                return Ok((s, Device::DirectMl));
+            }
+            #[allow(unreachable_patterns)]
+            other => {
+                bail!("this build has no {other} support. Rebuild with `--features {other}`, or use --ner-device cpu")
+            }
         }
-        std::thread::available_parallelism().map_or(4, |n| n.get())
+        if device == Device::Auto {
+            #[cfg(feature = "cuda")]
+            {
+                use ort::execution_providers::CUDAExecutionProvider;
+                if let Ok(s) = try_ep(CUDAExecutionProvider::default().build()) {
+                    return Ok((s, Device::Cuda));
+                }
+            }
+            #[cfg(feature = "directml")]
+            {
+                use ort::execution_providers::DirectMLExecutionProvider;
+                if let Ok(s) = try_ep(DirectMLExecutionProvider::default().build()) {
+                    return Ok((s, Device::DirectMl));
+                }
+            }
+        }
+        Ok((base()?.commit_from_file(path)?, Device::Cpu))
     }
 
     impl Ner {
-        pub fn load(cfg: &NerConfig, quiet: bool) -> Result<Self> {
+        pub fn load(cfg: &NerConfig, rt: Runtime, quiet: bool) -> Result<Self> {
             if !present() {
-                if std::env::var_os("NEUROALYZER_NO_DOWNLOAD").is_some() {
-                    bail!("the NER model isn't downloaded. Run `neuroalyzer model fetch`, or use --no-ner");
+                if std::env::var_os(crate::paths::env_name("NO_DOWNLOAD")).is_some() {
+                    bail!(
+                        "the NER model isn't downloaded. Run `{} model fetch`, or use --no-ner",
+                        env!("CARGO_PKG_NAME")
+                    );
                 }
                 if !quiet {
                     eprintln!("The NER model isn't downloaded yet; fetching it once (about 205 MB).");
@@ -205,41 +423,87 @@ mod imp {
             let params = Parameters::default()
                 .with_threshold(cfg.threshold)
                 .with_max_length(Some(512));
-            let rt = RuntimeParameters::default().with_threads(model_threads());
-            let model = GLiNER::<SpanMode>::new(params, rt, d.join("tokenizer.json"), d.join("model.onnx"))
-                .map_err(|e| anyhow::anyhow!("couldn't load the NER model: {e}"))?;
+            let pipeline = SpanPipeline::new(d.join("tokenizer.json"))
+                .map_err(|e| anyhow::anyhow!("couldn't load the NER tokenizer: {e}"))?;
+            let rt = Runtime {
+                sessions: rt.sessions.max(1),
+                threads: rt.threads.max(1),
+                batch: rt.batch.max(1),
+                device: rt.device,
+            };
+            // Single-threaded workers on CPU share one session: ONNX Runtime
+            // allows concurrent runs, each on its caller's thread, and the
+            // weights are loaded once. Multi-threaded workers each need their
+            // own intra-op pool, so they get their own session (sharing
+            // prepacked weights).
+            let prepacked = ort::session::builder::PrepackedWeights::new();
+            let model = d.join("model.onnx");
+            let (first, device) = build_session(&model, rt.threads, rt.device, &prepacked)
+                .map_err(|e| anyhow::anyhow!("couldn't load the NER model: {e:#}"))?;
+            let n = if rt.threads == 1 && device == Device::Cpu {
+                1
+            } else {
+                rt.sessions
+            };
+            let mut sessions = vec![first];
+            for _ in 1..n {
+                sessions.push(
+                    build_session(&model, rt.threads, device, &prepacked)
+                        .map_err(|e| anyhow::anyhow!("couldn't load the NER model: {e:#}"))?
+                        .0,
+                );
+            }
             Ok(Self {
-                model: Mutex::new(model),
+                sessions,
+                pipeline,
+                params,
+                rt,
+                device,
                 kinds: cfg.labels.iter().map(|l| kind_for(l)).collect(),
                 labels: cfg.labels.clone(),
-                cache: RwLock::new(HashMap::new()),
+                cache: Sharded::new(),
+                collecting: AtomicBool::new(false),
+                pending: Sharded::new(),
+                pending_bytes: AtomicU64::new(0),
+                overflow: AtomicBool::new(false),
                 inferred: AtomicU64::new(0),
                 hits: AtomicU64::new(0),
             })
         }
 
-        fn infer(&self, chunks: &[(&str, [u8; 32])]) {
-            for batch in chunks.chunks(BATCH) {
-                let m = self.model.lock().unwrap();
-                // Another thread may have inferred these while we waited for the model.
-                let batch: Vec<(&str, [u8; 32])> = {
-                    let cache = self.cache.read().unwrap();
-                    batch.iter().filter(|(_, h)| !cache.contains_key(h)).copied().collect()
-                };
-                if batch.is_empty() {
-                    continue;
-                }
-                let texts: Vec<String> = batch.iter().map(|(t, _)| t.to_string()).collect();
-                let Ok(input) = TextInput::new(texts, self.labels.clone()) else {
-                    continue;
-                };
-                let out = m.inference(input);
-                drop(m);
-                let Ok(out) = out else { continue };
-                let mut cache = self.cache.write().unwrap();
-                for (i, (_, h)) in batch.iter().enumerate() {
-                    let spans: Vec<(u32, u32, u8)> = out
-                        .spans
+        /// The runtime plan actually in use, for `-v`.
+        pub fn describe(&self) -> String {
+            format!(
+                "{} worker{} x {} thread{}, {} session{}, batch {}, device {}",
+                self.rt.sessions,
+                if self.rt.sessions == 1 { "" } else { "s" },
+                self.rt.threads,
+                if self.rt.threads == 1 { "" } else { "s" },
+                self.sessions.len(),
+                if self.sessions.len() == 1 { "" } else { "s" },
+                self.rt.batch,
+                self.device
+            )
+        }
+
+        /// Run the model on a batch of chunks; one result per input.
+        fn run(&self, session: &Session, texts: &[&str]) -> Result<Vec<Vec<(u32, u32, u8)>>> {
+            let input = TextInput::new(texts.iter().map(|t| t.to_string()).collect(), self.labels.clone())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let (inputs, ctx) = self
+                .pipeline
+                .pre_processor(&self.params)
+                .apply(input)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let outputs = session.run(inputs)?;
+            let out = self
+                .pipeline
+                .post_processor(&self.params)
+                .apply((outputs, ctx))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            Ok((0..texts.len())
+                .map(|i| {
+                    out.spans
                         .get(i)
                         .map(|v| {
                             v.iter()
@@ -250,52 +514,133 @@ mod imp {
                                 })
                                 .collect()
                         })
-                        .unwrap_or_default();
-                    cache.insert(*h, Arc::new(spans));
-                }
-                self.inferred.fetch_add(batch.len() as u64, Ordering::Relaxed);
+                        .unwrap_or_default()
+                })
+                .collect())
+        }
+
+        pub fn collecting(&self) -> bool {
+            self.collecting.load(Ordering::Relaxed)
+        }
+
+        /// Start stage 1: `find` records uncached chunks instead of inferring.
+        pub fn begin_collect(&self) {
+            self.overflow.store(false, Ordering::Relaxed);
+            self.pending_bytes.store(0, Ordering::Relaxed);
+            self.collecting.store(true, Ordering::Release);
+        }
+
+        /// End stage 1 and hand over what was collected.
+        pub fn end_collect(&self) -> Pending {
+            self.collecting.store(false, Ordering::Release);
+            Pending {
+                chunks: self
+                    .pending
+                    .drain()
+                    .into_iter()
+                    .map(|(h, t)| (h, Box::from(&*t)))
+                    .collect(),
+                complete: !self.overflow.load(Ordering::Relaxed),
             }
         }
 
-        /// Infer every unseen chunk of these texts, batched.
-        pub fn prepare<'a>(&self, texts: impl Iterator<Item = &'a str>) {
-            let mut pending: Vec<(&str, [u8; 32])> = vec![];
-            let mut seen: HashSet<[u8; 32]> = HashSet::new();
-            let texts: Vec<&str> = texts.collect();
-            {
-                let cache = self.cache.read().unwrap();
-                for t in &texts {
-                    for (s, e) in crate::prose::chunks(t, CHUNK_WORDS) {
-                        let c = &t[s..e];
-                        let h = *blake3::hash(c.as_bytes()).as_bytes();
-                        if !cache.contains_key(&h) && seen.insert(h) {
-                            pending.push((c, h));
-                        }
-                    }
+        fn collect(&self, h: Hash, c: &str) {
+            if self.cache.contains(&h) || self.pending.contains(&h) {
+                return;
+            }
+            let n = self.pending_bytes.fetch_add(c.len() as u64, Ordering::Relaxed);
+            if n > COLLECT_BUDGET {
+                self.overflow.store(true, Ordering::Relaxed);
+                return;
+            }
+            self.pending.insert(h, Arc::from(c));
+        }
+
+        /// Stage 2: infer every collected chunk, longest first, on the worker
+        /// pool. `pb` counts work units (≈ model words), so its rate and ETA
+        /// track the real cost; its message shows chunks.
+        pub fn infer_all(&self, p: Pending, pb: &indicatif::ProgressBar) {
+            let mut chunks: Vec<(Hash, Box<str>, u64)> = p
+                .chunks
+                .into_iter()
+                .map(|(h, t)| {
+                    let w = work_units(&t);
+                    (h, t, w)
+                })
+                .collect();
+            if chunks.is_empty() {
+                return;
+            }
+            chunks.sort_by_key(|c| std::cmp::Reverse(c.2));
+            let total_chunks = chunks.len() as u64;
+            pb.set_length(chunks.iter().map(|c| c.2).sum());
+            pb.set_position(0);
+            let batch = self.rt.batch;
+            let groups: Vec<&[(Hash, Box<str>, u64)]> = chunks.chunks(batch).collect();
+            let next = AtomicUsize::new(0);
+            let done = AtomicU64::new(0);
+            let started = Instant::now();
+            let last_msg = Mutex::new(Instant::now() - Duration::from_secs(1));
+            let update = |force: bool| {
+                let Ok(mut t) = last_msg.try_lock() else { return };
+                if !force && t.elapsed() < Duration::from_millis(250) {
+                    return;
                 }
-            }
-            if !pending.is_empty() {
-                self.infer(&pending);
-            }
+                *t = Instant::now();
+                let d = done.load(Ordering::Relaxed);
+                let secs = started.elapsed().as_secs_f64().max(0.001);
+                pb.set_message(format!("{d}/{total_chunks} chunks, {:.0}/s", d as f64 / secs));
+            };
+            std::thread::scope(|s| {
+                for w in 0..self.rt.sessions {
+                    let session = &self.sessions[w % self.sessions.len()];
+                    let (groups, next, done, update) = (&groups, &next, &done, &update);
+                    s.spawn(move || {
+                        loop {
+                            let k = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(g) = groups.get(k) else { break };
+                            let texts: Vec<&str> = g.iter().map(|c| &*c.1).collect();
+                            // A chunk the model can't take is retried alone when
+                            // redaction reaches it; a failure there skips it, as before.
+                            if let Ok(spans) = self.run(session, &texts) {
+                                for (c, sp) in g.iter().zip(spans) {
+                                    self.cache.insert(c.0, Arc::new(sp));
+                                }
+                                self.inferred.fetch_add(g.len() as u64, Ordering::Relaxed);
+                            }
+                            done.fetch_add(g.len() as u64, Ordering::Relaxed);
+                            pb.inc(g.iter().map(|c| c.2).sum());
+                            update(false);
+                        }
+                    });
+                }
+            });
+            update(true);
         }
 
         pub fn find(&self, text: &str, out: &mut Vec<Finding>) {
+            let collecting = self.collecting();
             for (s, e) in crate::prose::chunks(text, CHUNK_WORDS) {
                 let c = &text[s..e];
                 let h = *blake3::hash(c.as_bytes()).as_bytes();
-                let cached = self.cache.read().unwrap().get(&h).cloned();
-                let spans = match cached {
+                if collecting {
+                    self.collect(h, c);
+                    continue;
+                }
+                let spans = match self.cache.get(&h) {
                     Some(sp) => {
                         self.hits.fetch_add(1, Ordering::Relaxed);
                         sp
                     }
-                    None => {
-                        self.infer(&[(c, h)]);
-                        match self.cache.read().unwrap().get(&h).cloned() {
-                            Some(sp) => sp,
-                            None => continue,
+                    None => match self.run(&self.sessions[0], &[c]) {
+                        Ok(mut v) => {
+                            let sp: Spans = Arc::new(v.pop().unwrap_or_default());
+                            self.cache.insert(h, sp.clone());
+                            self.inferred.fetch_add(1, Ordering::Relaxed);
+                            sp
                         }
-                    }
+                        Err(_) => continue,
+                    },
                 };
                 for &(a, b, li) in spans.iter() {
                     let (a, b) = (s + a as usize, s + b as usize);
@@ -319,3 +664,22 @@ mod imp {
 }
 
 pub use imp::{Ner, fetch};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn work_units_counts_words_and_marks() {
+        assert_eq!(work_units("Hello, world!"), 4);
+        assert_eq!(work_units("re-run the_thing"), 2);
+        assert_eq!(work_units(""), 1);
+    }
+
+    #[test]
+    fn device_parses() {
+        assert_eq!("CoreML".parse::<Device>(), Ok(Device::CoreMl));
+        assert_eq!("dml".parse::<Device>(), Ok(Device::DirectMl));
+        assert!("tpu".parse::<Device>().is_err());
+    }
+}

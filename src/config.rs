@@ -23,6 +23,10 @@ pub struct Defaults {
     pub ner: Option<bool>,
     /// Number of backup archives to keep.
     pub keep: Option<usize>,
+    /// CPU budget, like -j: a number, "max", "half" or "p-cores". Default: auto.
+    pub threads: Option<String>,
+    /// Run at low priority, like --low-priority.
+    pub low_priority: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -56,6 +60,14 @@ fn default_custom_type() -> String {
 pub struct NerConfig {
     pub threshold: f32,
     pub labels: Vec<String>,
+    /// Parallel model workers, like --ner-sessions. Default: performance cores.
+    pub sessions: Option<usize>,
+    /// Threads per worker, like --ner-threads. Default: 1.
+    pub threads: Option<usize>,
+    /// Chunks per model call, like --ner-batch. Default: 1.
+    pub batch: Option<usize>,
+    /// auto, cpu, coreml, cuda or directml, like --ner-device.
+    pub device: Option<String>,
 }
 
 impl Default for NerConfig {
@@ -68,6 +80,10 @@ impl Default for NerConfig {
                 "organization".into(),
                 "date of birth".into(),
             ],
+            sessions: None,
+            threads: None,
+            batch: None,
+            device: None,
         }
     }
 }
