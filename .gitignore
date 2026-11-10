@@ -9,3 +9,6 @@ report-*.json
 report-*.md
 /fixtures-out/
 /dist
+bench/.corpus/
+bench/results.jsonl
+bench/reports/
