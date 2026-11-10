@@ -71,24 +71,67 @@ impl Engine {
         if out == s { None } else { Some(out) }
     }
 
+    /// Redact one string literal of `raw`, if it needs it.
+    fn redact_literal(
+        &self,
+        raw: &[u8],
+        span: std::ops::Range<usize>,
+        key: Option<&[u8]>,
+        counts: &mut Counts,
+    ) -> Option<(usize, usize, String)> {
+        let lit_bytes = &raw[span.clone()];
+        if self.ner.is_none() && !self.det.record_may_match(lit_bytes) {
+            return None;
+        }
+        let val = jsonscan::decode(lit_bytes)?;
+        let key = jsonscan::key_str(key);
+        self.redact_str(&val, &key, counts)
+            .map(|new| (span.start, span.end, jsonscan::encode(&new)))
+    }
+
     /// Redact every string value inside one JSON document. Returns new bytes if changed.
     /// Err(()) means the bytes aren't JSON.
     #[allow(clippy::result_unit_err)]
     pub fn redact_json(&self, raw: &[u8], counts: &mut Counts) -> Result<Option<Vec<u8>>, ()> {
+        // A single cell can hold hundreds of megabytes (OpenCode stores whole
+        // messages). Split the per-string work across threads so one huge
+        // database row can't pin the scan to a single core.
+        const PARALLEL_JSON: usize = 4 << 20;
         let mut edits: Vec<(usize, usize, String)> = vec![];
-        let ok = jsonscan::for_each_string(raw, |lit| {
-            let lit_bytes = &raw[lit.span.clone()];
-            if self.ner.is_none() && !self.det.record_may_match(lit_bytes) {
-                return;
+        if raw.len() >= PARALLEL_JSON {
+            use rayon::prelude::*;
+            let mut lits: Vec<(std::ops::Range<usize>, Option<&[u8]>)> = vec![];
+            let ok = jsonscan::for_each_string(raw, |lit| lits.push((lit.span, lit.key)));
+            if !ok {
+                return Err(());
             }
-            let Some(val) = jsonscan::decode(lit_bytes) else { return };
-            let key = jsonscan::key_str(lit.key);
-            if let Some(new) = self.redact_str(&val, &key, counts) {
-                edits.push((lit.span.start, lit.span.end, jsonscan::encode(&new)));
+            type Part = (Vec<(usize, usize, String)>, Counts);
+            let parts: Vec<Part> = lits
+                .par_chunks(1024)
+                .map(|chunk| {
+                    let mut counts = Counts::new();
+                    let mut edits = vec![];
+                    for (span, key) in chunk {
+                        if let Some(e) = self.redact_literal(raw, span.clone(), *key, &mut counts) {
+                            edits.push(e);
+                        }
+                    }
+                    (edits, counts)
+                })
+                .collect();
+            for (e, c) in parts {
+                add_counts(counts, &c);
+                edits.extend(e);
             }
-        });
-        if !ok {
-            return Err(());
+        } else {
+            let ok = jsonscan::for_each_string(raw, |lit| {
+                if let Some(e) = self.redact_literal(raw, lit.span, lit.key, counts) {
+                    edits.push(e);
+                }
+            });
+            if !ok {
+                return Err(());
+            }
         }
         if edits.is_empty() {
             // The scanner is lenient; make sure plain text isn't mistaken for JSON.

@@ -64,6 +64,10 @@ pub struct Allow {
 pub struct Rule {
     pub id: &'static str,
     pub re: Regex,
+    /// ASCII-boundary variant of `re`, present only when the rule has a `\b`.
+    /// A Unicode word boundary forces `captures_iter` onto the PikeVM, so this
+    /// DFA-friendly superset decides whether running `re` is worth it.
+    pub fast: Option<Regex>,
     pub secret_group: Option<usize>,
     pub entropy: Option<f64>,
     pub keywords: Vec<String>,
@@ -149,9 +153,14 @@ impl RuleSet {
             if r.keywords.is_empty() {
                 unkeyed.push(rules.len() as u32);
             }
+            let fast = widened
+                .contains(r"\b")
+                .then(|| compile(&widened.replace(r"\b", r"(?-u:\b)")))
+                .flatten();
             rules.push(Rule {
                 id: Box::leak(r.id.into_boxed_str()),
                 re,
+                fast,
                 secret_group: r.secret_group,
                 entropy: r.entropy,
                 keywords: r.keywords,

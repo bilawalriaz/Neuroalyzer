@@ -8,7 +8,7 @@ pub mod validators;
 use crate::config::Config;
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use anyhow::{Context, Result};
-use regex::{Regex, RegexBuilder, RegexSet};
+use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use validators as v;
@@ -98,7 +98,10 @@ pub struct Detectors {
     anchor_rules: Vec<Vec<u32>>,
     rules: gitleaks::RuleSet,
     pii: Vec<PiiPat>,
-    pii_set: RegexSet,
+    /// One alternation of the ASCII-boundary PII variants, used as a fast
+    /// prefilter. `RegexSet::matches` would be the obvious choice, but it is
+    /// implemented with the PikeVM; a single `Regex::is_match` runs on the DFA.
+    pii_pre: Regex,
     bytes_set: regex::bytes::RegexSet,
     keyctx: Regex,
     keyname: Regex,
@@ -112,6 +115,15 @@ pub struct Detectors {
     allow_re: Vec<Regex>,
     pub ip_enabled: bool,
     pub ip_private: bool,
+}
+
+/// ASCII-only variant of a pattern's word boundaries. A Unicode `\b` cannot be
+/// run by the lazy DFA, so regex-automata falls back to the PikeVM, an
+/// interpreter that is roughly ten times slower. Every boundary in these
+/// patterns sits next to an ASCII word character, so testing the ASCII variant
+/// can only ever match *more*: it is a safe prefilter for the exact pattern.
+fn ascii_word_bounds(s: &str) -> String {
+    s.replace(r"\b", r"(?-u:\b)")
 }
 
 fn re(s: &str) -> Regex {
@@ -335,7 +347,17 @@ impl Detectors {
                 check: chk_ip,
             },
         ];
-        let pii_set = RegexSet::new(pii.iter().map(|p| p.re.as_str())).context("building PII set")?;
+        // The exact patterns are run only on strings the ASCII-boundary
+        // variant matched; see `ascii_word_bounds`.
+        let pre_src = pii
+            .iter()
+            .map(|p| format!("(?:{})", ascii_word_bounds(p.re.as_str())))
+            .collect::<Vec<_>>()
+            .join("|");
+        let pii_pre = RegexBuilder::new(&pre_src)
+            .size_limit(1 << 24)
+            .build()
+            .context("building PII prefilter")?;
 
         let mut custom = vec![];
         for c in &cfg.patterns {
@@ -356,7 +378,9 @@ impl Detectors {
         }
 
         // Raw-bytes prefilter: PII shapes, keyword-less gitleaks rules and custom patterns.
-        let mut byte_pats: Vec<String> = pii.iter().map(|p| p.re.as_str().to_string()).collect();
+        // The PII entries use the ASCII-boundary variant, which matches a superset
+        // of the exact patterns, so nothing is missed.
+        let mut byte_pats: Vec<String> = pii.iter().map(|p| ascii_word_bounds(p.re.as_str())).collect();
         for &ri in &rules.unkeyed {
             byte_pats.push(rules.rules[ri as usize].re.as_str().to_string());
         }
@@ -388,7 +412,7 @@ impl Detectors {
             anchor_rules,
             rules,
             pii,
-            pii_set,
+            pii_pre,
             bytes_set,
             keyctx: re(
                 r#"(?i)(?:api[_-]?key|apikey|secret|token|passw(?:or)?d|passwd|pwd|authorization|auth[_-]?token|credentials?|private[_-]?key|access[_-]?key|client[_-]?secret)[a-z0-9_-]{0,20}\\{0,3}["']?\s*[:=]\s*\\{0,3}["']?(?:Bearer\s+|Basic\s+)?([A-Za-z0-9+/=_\-.~!@#$%^&*]{6,})"#,
@@ -452,6 +476,13 @@ impl Detectors {
         selected.dedup();
         for ri in selected {
             let r = &self.rules.rules[ri as usize];
+            // The ASCII variant matches a superset, so a miss here means the
+            // exact rule cannot match either.
+            if let Some(f) = &r.fast
+                && !f.is_match(text)
+            {
+                continue;
+            }
             for caps in r.re.captures_iter(text) {
                 let Some(m) = r.secret_match(&caps) else { continue };
                 let secret = m.as_str();
@@ -544,10 +575,11 @@ impl Detectors {
                 }
             }
         }
-        // Structured PII.
-        if self.pii_set.is_match(text) {
-            for i in self.pii_set.matches(text).iter() {
-                let p = &self.pii[i];
+        // Structured PII. The ASCII-boundary prefilter is a superset of the
+        // exact patterns, so running every exact pattern once it matches keeps
+        // the findings identical.
+        if self.pii_pre.is_match(text) {
+            for p in &self.pii {
                 for m in p.re.find_iter(text) {
                     if p.kind == "IBAN" {
                         if let Some(e) = trim_iban(m.as_str()) {
